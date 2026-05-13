@@ -17,6 +17,8 @@ export type CategoryId =
   | 'premises'
   | 'email'
   | 'phone'
+  | 'fio'
+  | 'passport'
 
 /** Тег плейсхолдера без скобок: [ТЕГ_1] */
 export type PlaceholderTag =
@@ -34,6 +36,8 @@ export type PlaceholderTag =
   | 'ПОМЕЩЕНИЕ'
   | 'EMAIL'
   | 'ТЕЛЕФОН'
+  | 'ФИО'
+  | 'ПАСПОРТНЫЕ_ДАННЫЕ'
 
 export type FoundEntity = {
   id: string
@@ -58,6 +62,8 @@ export const CATEGORY_OPTIONS: {
   { id: 'settlement_account', label: 'Расчётный счёт' },
   { id: 'corr_account', label: 'Корреспондентский счёт' },
   { id: 'bank', label: 'Банк' },
+  { id: 'fio', label: 'ФИО' },
+  { id: 'passport', label: 'Паспортные данные' },
   { id: 'address', label: 'Адреса' },
   { id: 'cadastre', label: 'Кадастровый номер' },
   { id: 'premises', label: 'Помещение / офис / квартира' },
@@ -98,6 +104,92 @@ function isOrgMatchOnBankLine(text: string, start: number): boolean {
   const lineEnd = lineEndIdx === -1 ? text.length : lineEndIdx
   const line = text.slice(lineStart, lineEnd)
   return /^\s*(?:Банк|банк)(?:\s+получателя)?\s*[:\-–.]/.test(line)
+}
+
+/** Строка с паспортным / правоохранительным контекстом — не банк */
+function isPassportOrPoliceContext(line: string): boolean {
+  return /МВД|УФМС|ОВД|полици|милици|отделение\s+полиции|отделение\s+милиции|паспорт|выдан/i.test(
+    line,
+  )
+}
+
+/** Рядом с банковскими реквизитами / названием банка */
+function lineHasBankKeyword(line: string): boolean {
+  return /(?:^|[\s,;])(?:БИК|бик|р\s*\/\s*с|р\.с\.|к\s*\/\s*с|к\.с\.|Банк|банк|наименование\s+банка|банк\s+получателя|Сбербанк|Альфа[\-\s]?Банк|ПАО|АО|ЗАО|ОАО|НКО|ВТБ|Газпром)/i.test(
+    line,
+  )
+}
+
+const FIO_BLOCKLIST = new Set(
+  [
+    'общество',
+    'ограниченной',
+    'ответственностью',
+    'российской',
+    'федерации',
+    'федерация',
+    'адрес',
+    'регистрации',
+    'жительства',
+    'зарегистрирован',
+    'паспорт',
+    'выдан',
+    'выдана',
+    'инн',
+    'кпп',
+    'огрн',
+    'огрнип',
+    'бик',
+    'ооо',
+    'ао',
+    'пао',
+    'зао',
+    'оао',
+    'ип',
+    'нко',
+    'республика',
+    'область',
+    'край',
+    'округ',
+    'район',
+    'город',
+    'деревня',
+    'село',
+    'посёлок',
+    'поселок',
+    'улица',
+    'проспект',
+    'переулок',
+    'квартира',
+    'корпус',
+    'строение',
+    'офис',
+    'помещение',
+    'счёт',
+    'счет',
+    'расчётный',
+    'расчетный',
+    'корреспондентский',
+    'наименование',
+    'организация',
+    'учредитель',
+    'решение',
+    'протокол',
+    'заседание',
+    'директор',
+    'генеральный',
+    'главный',
+    'бухгалтер',
+  ].map((w) => w.toLowerCase()),
+)
+
+function isLikelyFio(words: [string, string, string]): boolean {
+  for (const w of words) {
+    if (w.length < 2 || w.length > 32) return false
+    if (FIO_BLOCKLIST.has(w.toLowerCase())) return false
+    if (/\d/.test(w)) return false
+  }
+  return true
 }
 
 let idSeq = 0
@@ -410,6 +502,31 @@ export function findSensitiveEntities(
       ...collectRegexMatches(
         text,
         new RegExp(
+          '(?:Общество\\s+с\\s+ограниченной\\s+ответственностью|ОБЩЕСТВО\\s+С\\s+ОГРАНИЧЕННОЙ\\s+ОТВЕТСТВЕННОСТЬЮ)\\s*[«"]([^«"»\\n]{2,120})[»"]' +
+            orgStop,
+          'giu',
+        ),
+        (m) => {
+          if (isOrgMatchOnBankLine(text, m.index!)) return null
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r || r.value.length < 12) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'org_ip' as const,
+            placeholderTag: 'ОРГАНИЗАЦИЯ' as const,
+            typeLabel: 'Организация (ООО полное)',
+            priority: 59,
+          }
+        },
+      ),
+    )
+
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(
           `(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)\\s+[«"]([^«"»\\n]{2,80})[»"]` + orgStop,
           'giu',
         ),
@@ -483,12 +600,171 @@ export function findSensitiveEntities(
     )
   }
 
+  if (enabled.has('fio')) {
+    const fioRe =
+      /\b([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ][а-яё]{1,24})\b/gu
+    raw.push(
+      ...collectRegexMatches(text, fioRe, (m) => {
+        const w1 = m[1] ?? ''
+        const w2 = m[2] ?? ''
+        const w3 = m[3] ?? ''
+        if (!isLikelyFio([w1, w2, w3])) return null
+        const lineStart = text.lastIndexOf('\n', m.index! - 1) + 1
+        const lineEndIdx = text.indexOf('\n', m.index!)
+        const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
+        if (isPassportOrPoliceContext(line)) return null
+        if (
+          /Общество\s+с\s+ограниченной|ОБЩЕСТВО\s+С\s+ОГРАНИЧЕННОЙ|ООО|ПАО|АО|ЗАО|ОАО|ИП\b/i.test(
+            line,
+          )
+        ) {
+          return null
+        }
+        const r = trimMatchRange(m[0], m.index!)
+        if (!r) return null
+        return {
+          start: r.start,
+          end: r.end,
+          value: r.value,
+          categoryId: 'fio' as const,
+          placeholderTag: 'ФИО' as const,
+          typeLabel: 'ФИО',
+          priority: 54,
+        }
+      }),
+    )
+  }
+
+  if (enabled.has('passport')) {
+    const passTag = 'ПАСПОРТНЫЕ_ДАННЫЕ' as const
+    const passLabel = 'Паспортные данные' as const
+
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\bпаспорт\s+гражданина\s+РФ\s+(\d{4})\s*№\s*(\d{6})\b/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'passport' as const,
+            placeholderTag: passTag,
+            typeLabel: passLabel,
+            priority: 67,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\bпаспорт\s+(\d{4})\s+(\d{6})\b/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'passport' as const,
+            placeholderTag: passTag,
+            typeLabel: passLabel,
+            priority: 66,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\bсерия\s+(\d{4})\s+номер\s+(\d{6})\b/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'passport' as const,
+            placeholderTag: passTag,
+            typeLabel: passLabel,
+            priority: 66,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\bкод\s+подразделения\s+(\d{3}-\d{3})\b/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'passport' as const,
+            placeholderTag: passTag,
+            typeLabel: passLabel,
+            priority: 65,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\bдата\s+выдачи\s+(\d{2}\.\d{2}\.\d{4})\b/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'passport' as const,
+            placeholderTag: passTag,
+            typeLabel: passLabel,
+            priority: 65,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?:выдан|выдана)\s+(?:ОВД|УФМС|ГУ\s+МВД|МВД|отделением\s+полиции|отделением\s+милиции)\b[^.\n]{0,160}(?:\.|$)/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r || r.value.length < 8) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'passport' as const,
+            placeholderTag: passTag,
+            typeLabel: passLabel,
+            priority: 64,
+          }
+        },
+      ),
+    )
+  }
+
   if (enabled.has('bank')) {
     raw.push(
       ...collectRegexMatches(
         text,
         /(?:Банк|банк)(?:\s+получателя)?\s*[:\-–.]\s*[^\n]{2,120}/gu,
         (m) => {
+          const lineStart = text.lastIndexOf('\n', m.index! - 1) + 1
+          const lineEndIdx = text.indexOf('\n', m.index!)
+          const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
+          if (isPassportOrPoliceContext(line)) return null
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
           return {
@@ -506,8 +782,97 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
+        /наименование\s+банка\s*[:\-–.]\s*[^\n]{2,120}/giu,
+        (m) => {
+          const lineStart = text.lastIndexOf('\n', m.index! - 1) + 1
+          const lineEndIdx = text.indexOf('\n', m.index!)
+          const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
+          if (isPassportOrPoliceContext(line)) return null
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'bank' as const,
+            placeholderTag: 'БАНК' as const,
+            typeLabel: 'Банк',
+            priority: 51,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /банк\s+получателя\s*[:\-–.]\s*[^\n]{2,120}/giu,
+        (m) => {
+          const lineStart = text.lastIndexOf('\n', m.index! - 1) + 1
+          const lineEndIdx = text.indexOf('\n', m.index!)
+          const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
+          if (isPassportOrPoliceContext(line)) return null
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'bank' as const,
+            placeholderTag: 'БАНК' as const,
+            typeLabel: 'Банк',
+            priority: 51,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\bПАО\s+Сбербанк[^\n]{0,80}/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'bank' as const,
+            placeholderTag: 'БАНК' as const,
+            typeLabel: 'Банк',
+            priority: 50,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\bАО\s+Альфа[\-\s]?Банк[^\n]{0,80}/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'bank' as const,
+            placeholderTag: 'БАНК' as const,
+            typeLabel: 'Банк',
+            priority: 50,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
         /(?:филиал|отделение)\s+[«"]?[А-ЯЁA-Z][^«»\n]{2,60}[»"]?/giu,
         (m) => {
+          const lineStart = text.lastIndexOf('\n', m.index! - 1) + 1
+          const lineEndIdx = text.indexOf('\n', m.index!)
+          const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
+          if (isPassportOrPoliceContext(line)) return null
+          if (!lineHasBankKeyword(line)) return null
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
           return {
@@ -527,6 +892,33 @@ export function findSensitiveEntities(
   if (enabled.has('address')) {
     /** До конца строки или перед банковским блоком */
     const addrBankStop = '(?=\\n|Банковские\\s+реквизиты|\\s*БИК\\b|\\s*р\\/\\s*с|\\s*к\\/\\s*с|$)'
+
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?:адрес\s+регистрации|зарегистрирован\s+по\s+адресу|место\s+жительства)\s*:?\s*[^\n]+/giu,
+        (m) => {
+          const r0 = trimMatchRange(m[0], m.index!)
+          if (!r0 || r0.value.length < 10) return null
+          let { start, end, value } = r0
+          const vt = value.replace(/\.+\s*$/u, '').trimEnd()
+          if (vt.length < 10) return null
+          if (vt.length !== value.length) {
+            end -= value.length - vt.length
+            value = vt
+          }
+          return {
+            start,
+            end,
+            value,
+            categoryId: 'address' as const,
+            placeholderTag: 'АДРЕС' as const,
+            typeLabel: 'Адрес',
+            priority: 63,
+          }
+        },
+      ),
+    )
 
     raw.push(
       ...collectRegexMatches(
@@ -560,7 +952,7 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /\b\d{6}\s*,\s*(?:г\.|город)\s*[^,\n]+(?:,\s*ул\.\s*[^,\n]+)(?:,\s*д\.\s*[^,\n]+)?(?:,\s*(?:офис|оф\.|кв\.|пом\.|помещени[ея])[^\n,]*)?/giu,
+        /\b\d{6}\s*,(?:\s*Российская\s+Федерация\s*,)?(?:\s*[^,\n]+,\s*){0,2}(?:г\.|город)\s*[^,\n]+(?:,\s*(?:ул\.|улица)\s*[^,\n]+)?(?:,\s*(?:д\.|дом)\s*[^,\n]+)?(?:,\s*(?:кв\.|квартира|оф\.|офис)\s*[^,\n]*)?/giu,
         (m) => {
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
