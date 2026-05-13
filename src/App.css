@@ -1,0 +1,311 @@
+.app {
+  /* Кнопки: токены hover/disabled (светлая тема по умолчанию) */
+  --btn-primary-hover-bg: #6d28d9;
+  --btn-primary-border: #5b21b6;
+  --btn-secondary-hover-bg: rgba(170, 59, 255, 0.12);
+  --btn-disabled-bg: #e8e6ec;
+  --btn-disabled-text: #6f6a7a;
+  --btn-disabled-border: #d4d0dc;
+  --btn-primary-disabled-bg: #d4cce8;
+  --btn-primary-disabled-text: #5c5669;
+  --btn-primary-disabled-border: #c4bdd4;
+
+  padding: 1.5rem clamp(1rem, 3vw, 2rem) 3rem;
+  max-width: 56rem;
+  margin: 0 auto;
+}
+
+@media (prefers-color-scheme: dark) {
+  .app {
+    --btn-primary-hover-bg: #9333ea;
+    --btn-primary-border: #7c3aed;
+    --btn-secondary-hover-bg: rgba(192, 132, 252, 0.16);
+    --btn-disabled-bg: #2a2b32;
+    --btn-disabled-text: #6b7280;
+    --btn-disabled-border: #3f4149;
+    --btn-primary-disabled-bg: #3d3550;
+    --btn-primary-disabled-text: #9ca3af;
+    --btn-primary-disabled-border: #4b425f;
+  }
+}
+
+.app__header {
+  margin-bottom: 1.75rem;
+}
+
+.app__title {
+  font-size: clamp(1.5rem, 4vw, 2rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.5rem;
+  color: var(--text-h);
+}
+
+.app__lead {
+  margin: 0;
+  max-width: 40rem;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem 1.25rem 1.35rem;
+  margin-bottom: 1.25rem;
+  box-shadow: var(--panel-shadow);
+}
+
+.panel__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.field-label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-h);
+  margin-bottom: 0.5rem;
+}
+
+.panel .field-label {
+  margin-bottom: 0;
+}
+
+.muted {
+  font-size: 0.875rem;
+  color: var(--text);
+  opacity: 0.85;
+}
+
+.textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 8rem;
+  padding: 0.75rem 0.85rem;
+  font: inherit;
+  line-height: 1.45;
+  color: var(--text-h);
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.textarea--tall {
+  min-height: 14rem;
+}
+
+.textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.category-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.category-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.5rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.92rem;
+  color: var(--text-h);
+  cursor: pointer;
+  user-select: none;
+}
+
+.check input {
+  margin-top: 0.2rem;
+  accent-color: var(--accent);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.actions--wrap {
+  margin-top: 0.85rem;
+}
+
+.btn {
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 500;
+  padding: 0.55rem 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--btn-bg);
+  color: var(--text-h);
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    box-shadow 0.15s;
+}
+
+/* Secondary / outline: не пересекается с primary — иначе hover давал светлый фон + белый текст */
+.btn:hover:not(:disabled):not(.btn--primary):not(.btn--danger) {
+  background: var(--btn-secondary-hover-bg);
+  color: var(--text-h);
+  border-color: var(--accent-border);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+  pointer-events: none;
+  background: var(--btn-disabled-bg);
+  color: var(--btn-disabled-text);
+  border-color: var(--btn-disabled-border);
+}
+
+.btn--primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--btn-primary-border);
+}
+
+.btn.btn--primary:hover:not(:disabled) {
+  background: var(--btn-primary-hover-bg);
+  color: #fff;
+  border-color: var(--btn-primary-hover-bg);
+}
+
+.btn.btn--primary:disabled {
+  background: var(--btn-primary-disabled-bg);
+  color: var(--btn-primary-disabled-text);
+  border-color: var(--btn-primary-disabled-border);
+}
+
+.btn--ghost {
+  background: transparent;
+  font-weight: 500;
+}
+
+.btn--danger {
+  border-color: var(--danger-border);
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.btn.btn--danger:hover:not(:disabled) {
+  background: var(--danger-bg-hover);
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.btn.btn--danger:disabled {
+  background: var(--btn-disabled-bg);
+  color: var(--btn-disabled-text);
+  border-color: var(--btn-disabled-border);
+}
+
+.table-wrap {
+  overflow-x: auto;
+  margin-bottom: 1rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  text-align: left;
+}
+
+.data-table th,
+.data-table td {
+  padding: 0.55rem 0.65rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.data-table th {
+  background: var(--table-head-bg);
+  color: var(--text-h);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table tbody tr:hover {
+  background: var(--table-row-hover);
+}
+
+.col-check {
+  width: 5.5rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.col-check input {
+  accent-color: var(--accent);
+}
+
+.cell-code {
+  display: inline-block;
+  max-width: 22rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--text-h);
+}
+
+.cell-code--muted {
+  opacity: 0.9;
+}
+
+.hint {
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.disclaimer {
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--text);
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--accent-border);
+  background: var(--accent-bg);
+  border-radius: 0 8px 8px 0;
+}
+
+@media (max-width: 640px) {
+  .cell-code {
+    max-width: 100%;
+  }
+}
