@@ -240,6 +240,30 @@ export default function App() {
         Проверьте результат перед передачей документа. Сервис помогает найти и скрыть
         чувствительные данные, но не гарантирует полную юридическую анонимизацию.
       </p>
+
+      <footer className="app-footer">
+        <div className="app-footer__inner">
+          <p className="app-footer__line">© 2026. Все права защищены.</p>
+          <p className="app-footer__line">
+            Данные обрабатываются локально в браузере и не отправляются на сервер.
+          </p>
+          <p className="app-footer__line">
+            Сервис помогает маскировать чувствительные данные, но не гарантирует полную
+            юридическую анонимизацию.
+          </p>
+          <p className="app-footer__links">
+            <a className="app-footer__link" href="#privacy">
+              Политика конфиденциальности
+            </a>
+            <span className="app-footer__sep" aria-hidden="true">
+              ·
+            </span>
+            <a className="app-footer__link" href="#terms">
+              Пользовательское соглашение
+            </a>
+          </p>
+        </div>
+      </footer>
     </div>
   )
 }
