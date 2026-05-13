@@ -6,7 +6,6 @@ import {
   type CategoryId,
   type FoundEntity,
 } from './masking'
-import './App.css'
 
 type Row = FoundEntity & { replace: boolean }
 
