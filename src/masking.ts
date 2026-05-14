@@ -45,6 +45,7 @@ export type PlaceholderTag =
   | 'ФИО'
   | 'ПАСПОРТНЫЕ_ДАННЫЕ'
   | 'НОМЕР_ДОГОВОРА'
+  | 'НОМЕР_ПРИЛОЖЕНИЯ'
   | 'ДАТА'
   | 'СУММА'
   | 'СТАВКА'
@@ -162,13 +163,29 @@ function normalizeDocumentDateKey(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase().replace(/ё/g, 'е')
 }
 
-/** Токен сразу после последнего «№» в совпадении */
+/** Токен сразу после последнего знака номера (№ / U+2116) в совпадении */
 function tokenAfterLastNoSign(full: string): string | null {
-  const idx = full.lastIndexOf('№')
+  let idx = full.lastIndexOf('№')
+  if (idx === -1) idx = full.lastIndexOf('\u2116')
   if (idx === -1) return null
   const rest = full.slice(idx + 1).trim()
   const m = rest.match(/^(\S+)/u)
   return m?.[1] ?? null
+}
+
+/** Номер приложения после «Приложение»: №1, N 1, No 1 (без знака № в тексте) */
+function tokenAfterAppendixLabel(full: string): string | null {
+  const low = full.toLowerCase()
+  const appIdx = low.indexOf('приложение')
+  if (appIdx === -1) return null
+  const tail = full.slice(appIdx + 'приложение'.length)
+  let m = tail.match(/^\s*(?:№|\u2116)\.?\s*(\d+)/iu)
+  if (m) return m[1] ?? null
+  m = tail.match(/^\s*N\s*o\.?\s*(\d+)/iu)
+  if (m) return m[1] ?? null
+  m = tail.match(/^\s*N\s+(\d+)/iu)
+  if (m) return m[1] ?? null
+  return null
 }
 
 /** Не считать номером договора ссылку вида 1.1, 2.4 (пункты) */
@@ -1130,19 +1147,22 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('contract_number')) {
-    const cnType = 'Номер договора / документа' as const
     const cnPri = 68
+    const noNum = '(?:№|\\u2116)'
     const contractRes: RegExp[] = [
-      /Договор\s+[^\n]{0,280}?№\s*\S+/giu,
-      /договору\s+[^\n]{0,220}?№\s*\S+/giu,
-      /Контракт\s+[^\n]{0,220}?№\s*\S+/giu,
-      /Приложение\s*№\s*\S+/giu,
-      /к\s+Договору\s+[^\n]{0,320}?№\s*\S+/giu,
+      new RegExp(`Государственный\\s+контракт\\s+[\\s\\S]{0,200}?${noNum}\\s*\\S+`, 'giu'),
+      new RegExp(`Договор\\s+[\\s\\S]{0,420}?${noNum}\\s*\\S+`, 'giu'),
+      new RegExp(`Договор\\s*${noNum}\\s*\\S+`, 'giu'),
+      new RegExp(`договору\\s+[\\s\\S]{0,320}?${noNum}\\s*\\S+`, 'giu'),
+      new RegExp(`Контракт\\s+[\\s\\S]{0,280}?${noNum}\\s*\\S+`, 'giu'),
+      new RegExp(`Контракт\\s*${noNum}\\s*\\S+`, 'giu'),
+      new RegExp(`к\\s+Договору\\s+[\\s\\S]{0,420}?${noNum}\\s*\\S+`, 'giu'),
     ]
     for (const re of contractRes) {
       raw.push(
         ...collectRegexMatches(text, re, (m) => {
           const full = m[0]
+          if (/приложение/i.test(full)) return null
           const tok = tokenAfterLastNoSign(full)
           if (!tok || isContractClauseRef(tok)) return null
           const r = trimMatchRange(full, m.index!)
@@ -1153,7 +1173,33 @@ export function findSensitiveEntities(
             value: r.value,
             categoryId: 'contract_number' as const,
             placeholderTag: 'НОМЕР_ДОГОВОРА' as const,
-            typeLabel: cnType,
+            typeLabel: 'Номер договора / документа' as const,
+            priority: cnPri,
+          }
+        }),
+      )
+    }
+
+    const apxRes: RegExp[] = [
+      /Приложение\s*(?:№|\u2116)\.?\s*\d+/giu,
+      /Приложение\s*N\s*o\.?\s*\d+/giu,
+      /Приложение\s*N\s+\d+/giu,
+    ]
+    for (const re of apxRes) {
+      raw.push(
+        ...collectRegexMatches(text, re, (m) => {
+          const full = m[0]
+          const tok = tokenAfterAppendixLabel(full)
+          if (!tok || isContractClauseRef(tok)) return null
+          const r = trimMatchRange(full, m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'contract_number' as const,
+            placeholderTag: 'НОМЕР_ПРИЛОЖЕНИЯ' as const,
+            typeLabel: 'Номер приложения' as const,
             priority: cnPri,
           }
         }),
