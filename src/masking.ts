@@ -8,6 +8,7 @@ export type CategoryId =
   | 'inn'
   | 'ogrn'
   | 'kpp'
+  | 'igk'
   | 'bik'
   | 'settlement_account'
   | 'corr_account'
@@ -19,6 +20,10 @@ export type CategoryId =
   | 'phone'
   | 'fio'
   | 'passport'
+  | 'contract_number'
+  | 'document_date'
+  | 'money_amount'
+  | 'interest_rate'
 
 /** Тег плейсхолдера без скобок: [ТЕГ_1] */
 export type PlaceholderTag =
@@ -27,6 +32,7 @@ export type PlaceholderTag =
   | 'ИНН'
   | 'ОГРН'
   | 'КПП'
+  | 'ИГК'
   | 'БИК'
   | 'РАСЧЕТНЫЙ_СЧЕТ'
   | 'КОРР_СЧЕТ'
@@ -38,6 +44,10 @@ export type PlaceholderTag =
   | 'ТЕЛЕФОН'
   | 'ФИО'
   | 'ПАСПОРТНЫЕ_ДАННЫЕ'
+  | 'НОМЕР_ДОГОВОРА'
+  | 'ДАТА'
+  | 'СУММА'
+  | 'СТАВКА'
 
 export type FoundEntity = {
   id: string
@@ -58,12 +68,17 @@ export const CATEGORY_OPTIONS: {
   { id: 'inn', label: 'ИНН' },
   { id: 'ogrn', label: 'ОГРН / ОГРНИП' },
   { id: 'kpp', label: 'КПП' },
+  { id: 'igk', label: 'ИГК / госконтракт' },
   { id: 'bik', label: 'БИК' },
   { id: 'settlement_account', label: 'Расчётный счёт' },
   { id: 'corr_account', label: 'Корреспондентский счёт' },
   { id: 'bank', label: 'Банк' },
   { id: 'fio', label: 'ФИО' },
   { id: 'passport', label: 'Паспортные данные' },
+  { id: 'contract_number', label: 'Номер договора' },
+  { id: 'document_date', label: 'Даты' },
+  { id: 'money_amount', label: 'Денежные суммы' },
+  { id: 'interest_rate', label: 'Процентные ставки' },
   { id: 'address', label: 'Адреса' },
   { id: 'cadastre', label: 'Кадастровый номер' },
   { id: 'premises', label: 'Помещение / офис / квартира' },
@@ -85,6 +100,234 @@ function normalizeForKey(value: string): string {
   return value.trim().replace(/\s+/g, ' ')
 }
 
+/** Нормализация кавычек в названии организации для группировки плейсхолдера */
+function normalizeOrgNameKey(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[""„]/g, '"')
+    .replace(/[«»]/g, '«')
+    .toLowerCase()
+}
+
+/** Снятие типичных падежных окончаний с одного слова (фамилия) */
+function stemRussianSurnameToken(w: string): string {
+  let x = w.toLowerCase().replace(/ё/g, 'е')
+  if (!x) return x
+  if (/ея$/u.test(x) && x.length >= 4) return x.slice(0, -2) + 'ей'
+  const fioCaseSuffixesAsc = [
+    'а',
+    'е',
+    'ю',
+    'у',
+    'я',
+    'ой',
+    'ым',
+    'им',
+    'их',
+    'ых',
+    'ого',
+    'его',
+    'овну',
+    'евну',
+    'овны',
+    'евны',
+    'ова',
+    'ева',
+    'ина',
+    'ича',
+    'овича',
+    'евича',
+  ].sort((a, b) => a.length - b.length || a.localeCompare(b, 'ru'))
+  for (const suf of fioCaseSuffixesAsc) {
+    if (!x.endsWith(suf)) continue
+    const nextLen = x.length - suf.length
+    if (nextLen < 4) continue
+    return x.slice(0, -suf.length)
+  }
+  return x
+}
+
+function normalizeMoneyAmountKey(value: string): string {
+  const d = value.replace(/[^\d]/g, '')
+  return d.length >= 4 ? d : normalizeForKey(value)
+}
+
+function normalizeInterestRateKey(value: string): string {
+  const m = value.match(/(\d{1,3}(?:[.,]\d+)?)\s*%/u)
+  return m ? m[1].replace(',', '.') : normalizeForKey(value)
+}
+
+function normalizeDocumentDateKey(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase().replace(/ё/g, 'е')
+}
+
+/** Токен сразу после последнего «№» в совпадении */
+function tokenAfterLastNoSign(full: string): string | null {
+  const idx = full.lastIndexOf('№')
+  if (idx === -1) return null
+  const rest = full.slice(idx + 1).trim()
+  const m = rest.match(/^(\S+)/u)
+  return m?.[1] ?? null
+}
+
+/** Не считать номером договора ссылку вида 1.1, 2.4 (пункты) */
+function isContractClauseRef(ref: string): boolean {
+  return /^\d{1,2}\.\d{1,2}(?:\.\d+)?$/u.test(ref.trim())
+}
+
+function isLikelyShortFioSurname(w: string): boolean {
+  if (w.length < 2 || w.length > 32) return false
+  if (FIO_BLOCKLIST.has(w.toLowerCase())) return false
+  if (/\d/.test(w)) return false
+  return true
+}
+
+/** Только для ключа плейсхолдера ФИО: склеивает падежные формы; краткие «Фамилия И.О.» — отдельная ветка */
+function normalizePersonNameKey(value: string): string {
+  const collapse = value.trim().replace(/\s+/g, ' ')
+  const shortM = collapse.match(
+    /^([А-ЯЁA-Zа-яё][а-яёa-z\-]{1,30})\s+([А-ЯЁA-Zа-яё]\.)\s*([А-ЯЁA-Zа-яё]\.?)$/u,
+  )
+  if (shortM) {
+    const sur = stemRussianSurnameToken(shortM[1])
+    const i1 = shortM[2][0]!.toLowerCase()
+    const i2 = (shortM[3][0] ?? '').toLowerCase()
+    return `fio2:${sur}:${i1}${i2}`
+  }
+
+  const tokens = collapse
+    .split(' ')
+    .map((t) => t.replace(/^[^\p{L}0-9]+|[^\p{L}0-9]+$/gu, ''))
+    .filter(Boolean)
+
+  const basis = collapse
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .trim()
+
+  if (tokens.length !== 3) {
+    return tokens.length > 0
+      ? tokens.join(' ').toLowerCase().replace(/ё/g, 'е')
+      : basis
+  }
+
+  const fioCaseSuffixesAsc = [
+    'а',
+    'е',
+    'ю',
+    'у',
+    'я',
+    'ой',
+    'ым',
+    'им',
+    'их',
+    'ых',
+    'ого',
+    'его',
+    'овну',
+    'евну',
+    'овны',
+    'евны',
+    'ова',
+    'ева',
+    'ина',
+    'ича',
+    'овича',
+    'евича',
+  ].sort((a, b) => a.length - b.length || a.localeCompare(b, 'ru'))
+
+  const stemOneWord = (word: string): string => {
+    let w = word.toLowerCase().replace(/ё/g, 'е')
+    if (!w) return w
+
+    if (/ея$/u.test(w) && w.length >= 4) {
+      w = w.slice(0, -2) + 'ей'
+      return w
+    }
+
+    for (const suf of fioCaseSuffixesAsc) {
+      if (!w.endsWith(suf)) continue
+      const nextLen = w.length - suf.length
+      if (nextLen < 4) continue
+      return w.slice(0, -suf.length)
+    }
+    return w
+  }
+
+  return tokens.map(stemOneWord).join(' ')
+}
+
+/** Удаляет из фрагмента ИГК пробелы, дефисы, точки, № для проверки длины и ключа */
+function cleanIgkPayload(s: string): string {
+  return s.replace(/[\s\-–.\u00A0№N°]+/gu, '')
+}
+
+/** Ключ группировки ИГК по «сухому» номеру (без метки и разделителей) */
+function normalizeIgkKey(value: string): string {
+  const payload = value
+    .replace(
+      /^(?:идентификатор\s+государственного\s+контракта\s*(?::|№\s*)?|государственного\s+контракта\s*№\s*|государственный\s+контракт\s*№\s*|ИГК\s*(?::|№\s*)?)\s*/iu,
+      '',
+    )
+    .replace(/^\s*№\.?\s*/iu, '')
+    .trim()
+  const c = cleanIgkPayload(payload).toLowerCase()
+  return c.length >= 10 ? c : normalizeForKey(value)
+}
+
+/**
+ * После окончания метки ИГК выделяет номер: цифры с разделителями или «плотный» буквенно-цифровой блок.
+ * Не захватывает короткие номера договора (например «№ 12»).
+ */
+function extractIgkIdRange(text: string, afterLabel: number): { idStart: number; end: number } | null {
+  let j = afterLabel
+  while (j < text.length && /[\s\u00A0]/.test(text[j])) j++
+  const nm = text.slice(j).match(/^№\.?\s*/iu)
+  if (nm) {
+    j += nm[0].length
+    while (j < text.length && /[\s\u00A0]/.test(text[j])) j++
+  }
+  const idStart = j
+  if (idStart >= text.length) return null
+
+  let k = idStart
+  if (/\d/u.test(text[idStart])) {
+    while (k < text.length) {
+      const c = text[k]
+      if (/\d/u.test(c)) {
+        k++
+        continue
+      }
+      if (/[\s\-–.\u00A0]/u.test(c)) {
+        let t = k
+        while (t < text.length && /[\s\-–.\u00A0]/u.test(text[t])) t++
+        if (t < text.length && /\d/u.test(text[t])) {
+          k = t
+          continue
+        }
+        break
+      }
+      break
+    }
+    const raw = text.slice(idStart, k)
+    const clean = cleanIgkPayload(raw)
+    if (!/^\d+$/u.test(clean) || clean.length < 10 || clean.length > 30) return null
+    return { idStart, end: k }
+  }
+
+  if (/[\p{L}\p{N}]/u.test(text[idStart])) {
+    while (k < text.length && /[\p{L}\p{N}\-–.]/u.test(text[k])) k++
+    const raw = text.slice(idStart, k)
+    const clean = cleanIgkPayload(raw)
+    if (clean.length < 10) return null
+    if (/^\d+$/u.test(clean) && (clean.length < 10 || clean.length > 30)) return null
+    return { idStart, end: k }
+  }
+
+  return null
+}
+
 /** Обрезает пробелы в совпадении, сохраняя корректные индексы в исходной строке */
 function trimMatchRange(
   full: string,
@@ -95,6 +338,36 @@ function trimMatchRange(
   const lead = full.indexOf(value)
   const start = baseIndex + (lead >= 0 ? lead : 0)
   return { start, end: start + value.length, value }
+}
+
+/** Обрезает распознанный адрес по квартире/этажу и стоп-фразам */
+function trimAddressCandidate(value: string): string {
+  let v = value.replace(/\r\n/g, '\n').trimEnd()
+  if (!v) return v
+
+  const stopRe =
+    /(?:,\s*единственный\s+участник|\s+единственный\s+участник|\s*\(далее|\s+руководствуясь|\s+принял\s+следующие\s+решения|(?:^|[\s,;])Подпись\b|\n+\s*\d+\.\s|,\s*Обществ[ао]\s+с\s+ограниченной|\b1\.\s*Изменить|\b2\.\s*Зарегистрировать)/giu
+
+  let stopAt = v.length
+  stopRe.lastIndex = 0
+  let sm: RegExpExecArray | null
+  while ((sm = stopRe.exec(v)) !== null) {
+    if (sm.index >= 0 && sm.index < stopAt) stopAt = sm.index
+  }
+
+  const head = v.slice(0, stopAt)
+
+  const unitRe =
+    /(?:кв\.|квартира|помещение|оф\.|офис|пом\.)\s*(?:№\s*)?[\d\-/]+|(?:этаж|Этаж)\s*[\d\-/]+/giu
+  let unitEnd = -1
+  unitRe.lastIndex = 0
+  while ((sm = unitRe.exec(head)) !== null) {
+    unitEnd = sm.index + sm[0].length
+  }
+
+  let out = unitEnd > 0 ? head.slice(0, unitEnd) : head
+  out = out.replace(/[,\s;.\u00A0]+$/u, '').trimEnd()
+  return out
 }
 
 /** Не считать «ООО/ПАО …» названием организации в строке «Банк: …» */
@@ -108,8 +381,15 @@ function isOrgMatchOnBankLine(text: string, start: number): boolean {
 
 /** Строка с паспортным / правоохранительным контекстом — не банк */
 function isPassportOrPoliceContext(line: string): boolean {
-  return /МВД|УФМС|ОВД|полици|милици|отделение\s+полиции|отделение\s+милиции|паспорт|выдан/i.test(
+  return /МВД|УФМС|ОВД|полици|милици|отделение\s+полиции|отделение\s+милиции|паспорт|выдан|серия|№\s*подр|подр\.|подразделения|код\s+подразделения/i.test(
     line,
+  )
+}
+
+/** Значение совпадения «банк» не должно относиться к паспорту / ОВД */
+function isBankValuePassportNoise(value: string): boolean {
+  return /милици|полици|мвд|уфмс|овд|паспорт|выдан|подр\.|подразделения|серия\s*:|номер\s*\d/i.test(
+    value,
   )
 }
 
@@ -123,6 +403,7 @@ function lineHasBankKeyword(line: string): boolean {
 const FIO_BLOCKLIST = new Set(
   [
     'общество',
+    'общества',
     'ограниченной',
     'ответственностью',
     'российской',
@@ -220,7 +501,22 @@ function assignPlaceholders(matches: RawMatch[]): FoundEntity[] {
   const nextByTag = new Map<PlaceholderTag, number>()
 
   return matches.map((m) => {
-    const key = `${m.placeholderTag}::${normalizeForKey(m.value)}`
+    const keyPart =
+      m.categoryId === 'fio'
+        ? normalizePersonNameKey(m.value)
+        : m.categoryId === 'igk'
+          ? normalizeIgkKey(m.value)
+          : m.categoryId === 'org_ip' &&
+              (m.placeholderTag === 'ОРГАНИЗАЦИЯ' || m.placeholderTag === 'ИП')
+            ? normalizeOrgNameKey(m.value)
+            : m.categoryId === 'money_amount'
+              ? normalizeMoneyAmountKey(m.value)
+              : m.categoryId === 'interest_rate'
+                ? normalizeInterestRateKey(m.value)
+                : m.categoryId === 'document_date'
+                  ? normalizeDocumentDateKey(m.value)
+                  : normalizeForKey(m.value)
+    const key = `${m.placeholderTag}::${keyPart}`
     let placeholder = keyToPlaceholder.get(key)
     if (!placeholder) {
       const n = (nextByTag.get(m.placeholderTag) ?? 0) + 1
@@ -399,6 +695,31 @@ export function findSensitiveEntities(
     )
   }
 
+  if (enabled.has('igk')) {
+    const igkLabelRe =
+      /(?:идентификатор\s+государственного\s+контракта\s*(?::|№\s*)?|государственного\s+контракта\s*№\s*|государственный\s+контракт\s*№\s*|ИГК\s*(?::|№\s*)?)/giu
+    for (const m of text.matchAll(igkLabelRe)) {
+      if (m.index === undefined) continue
+      const labelEnd = m.index + m[0].length
+      const idRange = extractIgkIdRange(text, labelEnd)
+      if (!idRange) continue
+      const start = m.index
+      const end = idRange.end
+      const value = text.slice(start, end)
+      const r = trimMatchRange(value, start)
+      if (!r) continue
+      raw.push({
+        start: r.start,
+        end: r.end,
+        value: r.value,
+        categoryId: 'igk' as const,
+        placeholderTag: 'ИГК' as const,
+        typeLabel: 'ИГК / идентификатор государственного контракта',
+        priority: 75,
+      })
+    }
+  }
+
   if (enabled.has('kpp')) {
     raw.push(
       ...collectRegexMatches(
@@ -494,15 +815,15 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('org_ip')) {
-    /** Остановка юрлица: запятая, ;, перевод строки, реквизиты, адрес, банк */
+    /** Остановка юрлица: запятая, ;, перевод строки, реквизиты, адрес, банк, «(далее …)» */
     const orgStop =
-      '(?=,|;|\\n|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)\\b|\\s+адрес\\b|\\s+юридический\\b|\\s+г\\.\\s|\\s+город\\b|\\s+ул\\.\\s|\\s+улица\\b|\\s+р\\/\\s*с\\b|\\s+р\\.с\\.|\\s+к\\/\\s*с\\b|\\s+БИК\\b|\\s+[Бб]анк\\b|$)'
+      '(?=,|;|\\n|\\s*\\(|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)\\b|\\s+адрес\\b|\\s+юридический\\b|\\s+г\\.\\s|\\s+город\\b|\\s+ул\\.\\s|\\s+улица\\b|\\s+р\\/\\s*с\\b|\\s+р\\.с\\.|\\s+к\\/\\s*с\\b|\\s+БИК\\b|\\s+[Бб]анк\\b|$)'
 
     raw.push(
       ...collectRegexMatches(
         text,
         new RegExp(
-          '(?:Общество\\s+с\\s+ограниченной\\s+ответственностью|ОБЩЕСТВО\\s+С\\s+ОГРАНИЧЕННОЙ\\s+ОТВЕТСТВЕННОСТЬЮ)\\s*[«"]([^«"»\\n]{2,120})[»"]' +
+          '(?:Обществ[ао]|ОБЩЕСТВ[АО])\\s+с\\s+ограниченной\\s+ответственностью\\s*[«"]([^«"»\\n]{2,120})[»"]' +
             orgStop,
           'giu',
         ),
@@ -602,30 +923,30 @@ export function findSensitiveEntities(
 
   if (enabled.has('fio')) {
     const fioRe =
-      /\b([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ][а-яё]{1,24})\b/gu
+      /(?:^|[\s,.:;()_\-])(?!Обществ)([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ][а-яё]{1,24})\s+((?:[А-ЯЁ][а-яё]*(?:ович|евич|вна|ична|ича|оглы|кызы|ич)(?:[аеиоуыья])?)|(?:[А-ЯЁ][а-яё]{7,}))(?=[\s,.:;()\]_\-]|$)/gu
     raw.push(
       ...collectRegexMatches(text, fioRe, (m) => {
         const w1 = m[1] ?? ''
         const w2 = m[2] ?? ''
         const w3 = m[3] ?? ''
         if (!isLikelyFio([w1, w2, w3])) return null
-        const lineStart = text.lastIndexOf('\n', m.index! - 1) + 1
-        const lineEndIdx = text.indexOf('\n', m.index!)
+        const inner = `${w1} ${w2} ${w3}`
+        const start = m.index! + m[0].indexOf(w1)
+        const end = start + inner.length
+        const lineStart = text.lastIndexOf('\n', start - 1) + 1
+        const lineEndIdx = text.indexOf('\n', start)
         const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
-        if (isPassportOrPoliceContext(line)) return null
-        if (
-          /Общество\s+с\s+ограниченной|ОБЩЕСТВО\s+С\s+ОГРАНИЧЕННОЙ|ООО|ПАО|АО|ЗАО|ОАО|ИП\b/i.test(
-            line,
-          )
-        ) {
+        const posInLine = start - lineStart
+        const low = line.toLowerCase()
+        const passportAt = low.indexOf('паспорт')
+        if (passportAt !== -1 && posInLine >= passportAt) return null
+        const beforeInLine = line.slice(0, posInLine)
+        if (/милици|полици|мвд|уфмс|овд|выдан|подразделения|№\s*подр|подр\./i.test(beforeInLine))
           return null
-        }
-        const r = trimMatchRange(m[0], m.index!)
-        if (!r) return null
         return {
-          start: r.start,
-          end: r.end,
-          value: r.value,
+          start,
+          end,
+          value: inner,
           categoryId: 'fio' as const,
           placeholderTag: 'ФИО' as const,
           typeLabel: 'ФИО',
@@ -633,11 +954,64 @@ export function findSensitiveEntities(
         }
       }),
     )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?:^|[\s,.:;()_\-])([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ]\.\s*[А-ЯЁ]\.)(?=[\s,.:;()\]_\-]|$)/gu,
+        (m) => {
+          const w1 = m[1] ?? ''
+          const w2 = (m[2] ?? '').replace(/\s+/g, ' ')
+          if (!isLikelyShortFioSurname(w1)) return null
+          const inner = `${w1} ${w2}`
+          const start = m.index! + m[0].indexOf(w1)
+          const end = start + inner.length
+          const lineStart = text.lastIndexOf('\n', start - 1) + 1
+          const lineEndIdx = text.indexOf('\n', start)
+          const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
+          const posInLine = start - lineStart
+          const low = line.toLowerCase()
+          const passportAt = low.indexOf('паспорт')
+          if (passportAt !== -1 && posInLine >= passportAt) return null
+          const beforeInLine = line.slice(0, posInLine)
+          if (/милици|полици|мвд|уфмс|овд|выдан|подразделения|№\s*подр|подр\./i.test(beforeInLine))
+            return null
+          return {
+            start,
+            end,
+            value: inner,
+            categoryId: 'fio' as const,
+            placeholderTag: 'ФИО' as const,
+            typeLabel: 'ФИО (инициалы)',
+            priority: 53,
+          }
+        },
+      ),
+    )
   }
 
   if (enabled.has('passport')) {
     const passTag = 'ПАСПОРТНЫЕ_ДАННЫЕ' as const
     const passLabel = 'Паспортные данные' as const
+
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /паспорт\s+гражданина\s+РФ[\s\S]{15,900}?(?=,\s*место\s+(?:регистрации|жительства)|,\s*адрес\s+регистрации|,\s*единственный)/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r || r.value.length < 25) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'passport' as const,
+            placeholderTag: passTag,
+            typeLabel: passLabel,
+            priority: 70,
+          }
+        },
+      ),
+    )
 
     raw.push(
       ...collectRegexMatches(
@@ -755,6 +1129,191 @@ export function findSensitiveEntities(
     )
   }
 
+  if (enabled.has('contract_number')) {
+    const cnType = 'Номер договора / документа' as const
+    const cnPri = 68
+    const contractRes: RegExp[] = [
+      /Договор\s+[^\n]{0,280}?№\s*\S+/giu,
+      /договору\s+[^\n]{0,220}?№\s*\S+/giu,
+      /Контракт\s+[^\n]{0,220}?№\s*\S+/giu,
+      /Приложение\s*№\s*\S+/giu,
+      /к\s+Договору\s+[^\n]{0,320}?№\s*\S+/giu,
+    ]
+    for (const re of contractRes) {
+      raw.push(
+        ...collectRegexMatches(text, re, (m) => {
+          const full = m[0]
+          const tok = tokenAfterLastNoSign(full)
+          if (!tok || isContractClauseRef(tok)) return null
+          const r = trimMatchRange(full, m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'contract_number' as const,
+            placeholderTag: 'НОМЕР_ДОГОВОРА' as const,
+            typeLabel: cnType,
+            priority: cnPri,
+          }
+        }),
+      )
+    }
+  }
+
+  if (enabled.has('interest_rate')) {
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?:Процентная\s+ставка\s+)?\d{1,3}(?:[.,]\d+)?\s*%(?:\s*годовых)?/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'interest_rate' as const,
+            placeholderTag: 'СТАВКА' as const,
+            typeLabel: 'Процентная ставка',
+            priority: 57,
+          }
+        },
+      ),
+    )
+  }
+
+  if (enabled.has('document_date')) {
+    const dtPri = 56
+    const dtTag = 'ДАТА' as const
+    const dtLabel = 'Дата документа / срок' as const
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\b(?:[12]?\d|3[01])\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(?:19|20)\d{2}(?:\s+года?)?\b/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'document_date' as const,
+            placeholderTag: dtTag,
+            typeLabel: dtLabel,
+            priority: dtPri,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\b(?:0[1-9]|[12]\d|3[01])\.(?:0[1-9]|1[0-2])\.(?:19|20)\d{2}\s*г\.?\b/gu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'document_date' as const,
+            placeholderTag: dtTag,
+            typeLabel: dtLabel,
+            priority: dtPri,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\b(?:янв|февр|мар|апр|ма[йя]|июн|июл|авг|сент|окт|ноя|дек)\.\s*(?:[1-9]|[12]\d)(?:\s*г\.?)?\b/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'document_date' as const,
+            placeholderTag: dtTag,
+            typeLabel: dtLabel,
+            priority: dtPri,
+          }
+        },
+      ),
+    )
+  }
+
+  if (enabled.has('money_amount')) {
+    const sumPri = 51
+    const sumTag = 'СУММА' as const
+    const sumLabel = 'Денежная сумма' as const
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\d{1,3}(?:\s+\d{3})+\s+рубл(?:я|ей|ь)(?:\s+\d{2}\s*копеек)?/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'money_amount' as const,
+            placeholderTag: sumTag,
+            typeLabel: sumLabel,
+            priority: sumPri,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\b(?:\d{1,3}(?:\s+\d{3})+|\d{5,}),\d{2}(?!\s*%)\b/gu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          if (/^\d{1,2}\.\d{1,2}$/.test(r.value.split(',')[0] ?? '')) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'money_amount' as const,
+            placeholderTag: sumTag,
+            typeLabel: sumLabel,
+            priority: sumPri,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?:сумма\s+займа|основной\s+долг)(?:\s+составляет|\s+выдается)?\s+((?:\d{1,3}(?:\s+\d{3})+|\d{5,})(?:,\d{2})?)/giu,
+        (m) => {
+          const val = m[1] ?? ''
+          const start = m.index! + m[0].indexOf(val)
+          const end = start + val.length
+          const value = text.slice(start, end)
+          const r = trimMatchRange(value, start)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'money_amount' as const,
+            placeholderTag: sumTag,
+            typeLabel: sumLabel,
+            priority: sumPri,
+          }
+        },
+      ),
+    )
+  }
+
   if (enabled.has('bank')) {
     raw.push(
       ...collectRegexMatches(
@@ -767,6 +1326,7 @@ export function findSensitiveEntities(
           if (isPassportOrPoliceContext(line)) return null
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
+          if (isBankValuePassportNoise(r.value)) return null
           return {
             start: r.start,
             end: r.end,
@@ -790,6 +1350,7 @@ export function findSensitiveEntities(
           if (isPassportOrPoliceContext(line)) return null
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
+          if (isBankValuePassportNoise(r.value)) return null
           return {
             start: r.start,
             end: r.end,
@@ -813,6 +1374,7 @@ export function findSensitiveEntities(
           if (isPassportOrPoliceContext(line)) return null
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
+          if (isBankValuePassportNoise(r.value)) return null
           return {
             start: r.start,
             end: r.end,
@@ -832,6 +1394,7 @@ export function findSensitiveEntities(
         (m) => {
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
+          if (isBankValuePassportNoise(r.value)) return null
           return {
             start: r.start,
             end: r.end,
@@ -851,6 +1414,7 @@ export function findSensitiveEntities(
         (m) => {
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
+          if (isBankValuePassportNoise(r.value)) return null
           return {
             start: r.start,
             end: r.end,
@@ -875,6 +1439,7 @@ export function findSensitiveEntities(
           if (!lineHasBankKeyword(line)) return null
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
+          if (isBankValuePassportNoise(r.value)) return null
           return {
             start: r.start,
             end: r.end,
@@ -896,25 +1461,48 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /(?:адрес\s+регистрации|зарегистрирован\s+по\s+адресу|место\s+жительства)\s*:?\s*[^\n]+/giu,
+        /(?:адрес\s+регистрации|место\s+регистрации|зарегистрирован\s+по\s+адресу|место\s+жительства)\s*:?\s*[^\n]+/giu,
         (m) => {
           const r0 = trimMatchRange(m[0], m.index!)
           if (!r0 || r0.value.length < 10) return null
-          let { start, end, value } = r0
+          let { start, value } = r0
           const vt = value.replace(/\.+\s*$/u, '').trimEnd()
           if (vt.length < 10) return null
-          if (vt.length !== value.length) {
-            end -= value.length - vt.length
-            value = vt
-          }
+          const trimmed = trimAddressCandidate(vt)
+          if (trimmed.length < 10) return null
           return {
             start,
-            end,
-            value,
+            end: start + trimmed.length,
+            value: trimmed,
             categoryId: 'address' as const,
             placeholderTag: 'АДРЕС' as const,
             typeLabel: 'Адрес',
             priority: 63,
+          }
+        },
+      ),
+    )
+
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\b\d{6},\s*Город\s+[^\n]+/giu,
+        (m) => {
+          const r0 = trimMatchRange(m[0], m.index!)
+          if (!r0 || r0.value.length < 18) return null
+          let { start, value } = r0
+          const vt = value.replace(/\.+\s*$/u, '').trimEnd()
+          if (vt.length < 18) return null
+          const trimmed = trimAddressCandidate(vt)
+          if (trimmed.length < 18) return null
+          return {
+            start,
+            end: start + trimmed.length,
+            value: trimmed,
+            categoryId: 'address' as const,
+            placeholderTag: 'АДРЕС' as const,
+            typeLabel: 'Адрес (орг.)',
+            priority: 61,
           }
         },
       ),
@@ -930,17 +1518,16 @@ export function findSensitiveEntities(
         (m) => {
           const r0 = trimMatchRange(m[0], m.index!)
           if (!r0 || r0.value.length < 8) return null
-          let { start, end, value } = r0
+          let { start, value } = r0
           const vt = value.replace(/\.+\s*$/u, '').trimEnd()
           if (vt.length < 8) return null
-          if (vt.length !== value.length) {
-            end -= value.length - vt.length
-            value = vt
-          }
+          if (/на\s+следующий/i.test(vt)) return null
+          const trimmed = trimAddressCandidate(vt)
+          if (trimmed.length < 8) return null
           return {
             start,
-            end,
-            value,
+            end: start + trimmed.length,
+            value: trimmed,
             categoryId: 'address' as const,
             placeholderTag: 'АДРЕС' as const,
             typeLabel: 'Адрес',
@@ -956,14 +1543,37 @@ export function findSensitiveEntities(
         (m) => {
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
+          const trimmed = trimAddressCandidate(r.value)
+          if (trimmed.length < 12) return null
           return {
             start: r.start,
-            end: r.end,
-            value: r.value,
+            end: r.start + trimmed.length,
+            value: trimmed,
             categoryId: 'address' as const,
             placeholderTag: 'АДРЕС' as const,
             typeLabel: 'Адрес',
             priority: 48,
+          }
+        },
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\b\d{6}\s*,\s*[^,\n]+,\s*ул\.?\s+[^,\n]+(?:,\s*[^,\n]+){0,14}/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          const trimmed = trimAddressCandidate(r.value)
+          if (trimmed.length < 12) return null
+          return {
+            start: r.start,
+            end: r.start + trimmed.length,
+            value: trimmed,
+            categoryId: 'address' as const,
+            placeholderTag: 'АДРЕС' as const,
+            typeLabel: 'Адрес',
+            priority: 47,
           }
         },
       ),
@@ -978,10 +1588,12 @@ export function findSensitiveEntities(
           const inner = full.slice(lead)
           const r = trimMatchRange(inner, m.index! + lead)
           if (!r) return null
+          const trimmed = trimAddressCandidate(r.value)
+          if (trimmed.length < 8) return null
           return {
             start: r.start,
-            end: r.end,
-            value: r.value,
+            end: r.start + trimmed.length,
+            value: trimmed,
             categoryId: 'address' as const,
             placeholderTag: 'АДРЕС' as const,
             typeLabel: 'Адрес',
@@ -1000,10 +1612,12 @@ export function findSensitiveEntities(
           const inner = full.slice(lead)
           const r = trimMatchRange(inner, m.index! + lead)
           if (!r) return null
+          const trimmed = trimAddressCandidate(r.value)
+          if (trimmed.length < 8) return null
           return {
             start: r.start,
-            end: r.end,
-            value: r.value,
+            end: r.start + trimmed.length,
+            value: trimmed,
             categoryId: 'address' as const,
             placeholderTag: 'АДРЕС' as const,
             typeLabel: 'Адрес',
