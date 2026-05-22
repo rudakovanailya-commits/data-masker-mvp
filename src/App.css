@@ -207,6 +207,18 @@
   font-weight: 500;
 }
 
+.btn--outline {
+  background: transparent;
+  border-color: var(--accent-border);
+  color: var(--text-h);
+}
+
+.btn.btn--outline:hover:not(:disabled) {
+  background: var(--btn-secondary-hover-bg);
+  color: var(--text-h);
+  border-color: var(--accent);
+}
+
 .btn--danger {
   border-color: var(--danger-border);
   color: var(--danger);

@@ -7,6 +7,8 @@ const isWindows = process.platform === 'win32'
 export default defineConfig({
   plugins: [react()],
   server: {
+    port: 5174,
+    strictPort: true,
     // На Windows события файловой системы часто не доходят до watcher
     // (антивирус, OneDrive, папка Temp) — без polling изменения не триггерят HMR.
     ...(isWindows ? { watch: { usePolling: true, interval: 200 } } : {}),

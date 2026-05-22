@@ -84,6 +84,13 @@ export default function App() {
     URL.revokeObjectURL(url)
   }, [resultText])
 
+  const handleClearSource = useCallback(() => {
+    setSourceText('')
+    setRows([])
+    setResultText('')
+    setCopyHint(null)
+  }, [])
+
   const handleClearAll = useCallback(() => {
     setSourceText('')
     setRows([])
@@ -150,6 +157,14 @@ export default function App() {
           <button type="button" className="btn btn--primary" onClick={handleFind}>
             Найти данные
           </button>
+          <button
+            type="button"
+            className="btn btn--outline"
+            onClick={handleClearSource}
+            disabled={!sourceText && !hasRows && !resultText}
+          >
+            Очистить исходный текст
+          </button>
         </div>
       </section>
 
@@ -206,9 +221,9 @@ export default function App() {
         </label>
         <textarea
           id="result"
-          className="textarea"
+          className="textarea textarea--tall"
           value={resultText}
-          readOnly
+          onChange={(e) => setResultText(e.target.value)}
           placeholder="Нажмите «Заменить выбранное», чтобы получить очищенный текст…"
           spellCheck={false}
         />

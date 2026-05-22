@@ -386,6 +386,34 @@ function trimAddressCandidate(value: string): string {
   out = out.replace(/[,\s;.\u00A0]+$/u, '').trimEnd()
   return out
 }
+function isValidAddressCandidate(value: string): boolean {
+  const v = value.toLowerCase()
+
+  // не ловим заголовки
+  if (/^адреса\s+и\s+реквизиты/u.test(v)) {
+    return false
+  }
+
+  // не ловим служебные фразы
+  if (/по\s+адресу,\s*указан/i.test(v)) {
+    return false
+  }
+
+  if (/в\s+адрес\s+(ооо|ао|пао|ип)/i.test(v)) {
+    return false
+  }
+
+  // у настоящего адреса должны быть признаки адреса
+  const hasAddressMarkers =
+    /\b\d{6}\b/u.test(v) ||
+    /\b(?:г\.|город|ул\.|улица|д\.|дом|корп\.|к\.|кв\.|оф\.|пом\.|литера)\b/iu.test(v)
+
+  if (!hasAddressMarkers) {
+    return false
+  }
+
+  return true
+}
 
 /** Не считать «ООО/ПАО …» названием организации в строке «Банк: …» */
 function isOrgMatchOnBankLine(text: string, start: number): boolean {
@@ -741,7 +769,7 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /(?:КПП|кпп)[\s.:—–-]+(\d{9})\b/gi,
+        /\b(?:КПП|кпп)\b[\s.:—–-]+(\d{9})\b/gi,
         (m) => {
           const val = m[1] ?? m[0]
           const start = m.index! + m[0].indexOf(val)
@@ -757,17 +785,7 @@ export function findSensitiveEntities(
         },
       ),
     )
-    raw.push(
-      ...collectRegexMatches(text, /\b\d{9}\b/g, (m) => ({
-        start: m.index!,
-        end: m.index! + m[0].length,
-        value: m[0],
-        categoryId: 'kpp' as const,
-        placeholderTag: 'КПП' as const,
-        typeLabel: 'КПП (9 цифр)',
-        priority: 30,
-      })),
-    )
+    
   }
 
   if (enabled.has('corr_account')) {
@@ -832,9 +850,9 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('org_ip')) {
-    /** Остановка юрлица: запятая, ;, перевод строки, реквизиты, адрес, банк, «(далее …)» */
+    /** Остановка юрлица: запятая, ;, перевод строки, реквизиты, адрес, банк, следующее юрлицо */
     const orgStop =
-      '(?=,|;|\\n|\\s*\\(|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)\\b|\\s+адрес\\b|\\s+юридический\\b|\\s+г\\.\\s|\\s+город\\b|\\s+ул\\.\\s|\\s+улица\\b|\\s+р\\/\\s*с\\b|\\s+р\\.с\\.|\\s+к\\/\\s*с\\b|\\s+БИК\\b|\\s+[Бб]анк\\b|$)'
+      '(?=,|;|\\.|\\n|\\s*\\(|\\s+(?:с|и|между)\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)\\b|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)\\b|\\s+адрес\\b|\\s+юридический\\b|\\s+г\\.\\s|\\s+город\\b|\\s+ул\\.\\s|\\s+улица\\b|\\s+р\\/\\s*с\\b|\\s+р\\.с\\.|\\s+к\\/\\s*с\\b|\\s+БИК\\b|\\s+[Бб]анк\\b|$)'
 
     raw.push(
       ...collectRegexMatches(
@@ -865,7 +883,9 @@ export function findSensitiveEntities(
       ...collectRegexMatches(
         text,
         new RegExp(
-          `(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)\\s+[«"]([^«"»\\n]{2,80})[»"]` + orgStop,
+          '(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)\\s+' +
+            '(?:[«"][^,;\\n]{2,100}?[»"]?|[А-ЯЁA-Zа-яё0-9\\-]+(?:\\s+[А-ЯЁA-Zа-яё0-9\\-]+){0,4})' +
+            orgStop,
           'giu',
         ),
         (m) => {
@@ -884,31 +904,7 @@ export function findSensitiveEntities(
         },
       ),
     )
-    raw.push(
-      ...collectRegexMatches(
-        text,
-        new RegExp(
-          '(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)\\s+(?![«"])' +
-            '(?:[А-ЯЁA-Zа-яё0-9\\-]+)(?:\\s+[А-ЯЁA-Zа-яё0-9\\-]+){0,3}' +
-            orgStop,
-          'giu',
-        ),
-        (m) => {
-          if (isOrgMatchOnBankLine(text, m.index!)) return null
-          const r = trimMatchRange(m[0], m.index!)
-          if (!r || r.value.length < 5) return null
-          return {
-            start: r.start,
-            end: r.end,
-            value: r.value,
-            categoryId: 'org_ip' as const,
-            placeholderTag: 'ОРГАНИЗАЦИЯ' as const,
-            typeLabel: 'Организация',
-            priority: 57,
-          }
-        },
-      ),
-    )
+
     raw.push(
       ...collectRegexMatches(
         text,
@@ -1151,18 +1147,15 @@ export function findSensitiveEntities(
     const noNum = '(?:№|\\u2116)'
     const contractRes: RegExp[] = [
       new RegExp(`Государственный\\s+контракт\\s+[\\s\\S]{0,200}?${noNum}\\s*\\S+`, 'giu'),
-      new RegExp(`Договор\\s+[\\s\\S]{0,420}?${noNum}\\s*\\S+`, 'giu'),
+      new RegExp(`к\\s+Договору\\s*${noNum}\\s*\\S+`, 'giu'),
       new RegExp(`Договор\\s*${noNum}\\s*\\S+`, 'giu'),
-      new RegExp(`договору\\s+[\\s\\S]{0,320}?${noNum}\\s*\\S+`, 'giu'),
-      new RegExp(`Контракт\\s+[\\s\\S]{0,280}?${noNum}\\s*\\S+`, 'giu'),
       new RegExp(`Контракт\\s*${noNum}\\s*\\S+`, 'giu'),
-      new RegExp(`к\\s+Договору\\s+[\\s\\S]{0,420}?${noNum}\\s*\\S+`, 'giu'),
     ]
     for (const re of contractRes) {
       raw.push(
         ...collectRegexMatches(text, re, (m) => {
           const full = m[0]
-          if (/приложение/i.test(full)) return null
+          if (/^приложение\s*(?:№|\u2116|N|No)/iu.test(full)) return null
           const tok = tokenAfterLastNoSign(full)
           if (!tok || isContractClauseRef(tok)) return null
           const r = trimMatchRange(full, m.index!)
@@ -1558,7 +1551,7 @@ export function findSensitiveEntities(
       ...collectRegexMatches(
         text,
         new RegExp(
-          '(?:юридический\\s+)?адрес\\s*:?\\s*[^\\n]+?' + addrBankStop,
+          '(?:юридический\\s+адрес|адрес\\s+места\\s+нахождения|место\\s+нахождения|адрес\\s+регистрации)\\s*:?\\s*[^\\n]+?' + addrBankStop,
           'giu',
         ),
         (m) => {
@@ -1570,6 +1563,8 @@ export function findSensitiveEntities(
           if (/на\s+следующий/i.test(vt)) return null
           const trimmed = trimAddressCandidate(vt)
           if (trimmed.length < 8) return null
+          if (!isValidAddressCandidate(trimmed)) return null
+          
           return {
             start,
             end: start + trimmed.length,
@@ -1585,7 +1580,7 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /\b\d{6}\s*,(?:\s*Российская\s+Федерация\s*,)?(?:\s*[^,\n]+,\s*){0,2}(?:г\.|город)\s*[^,\n]+(?:,\s*(?:ул\.|улица)\s*[^,\n]+)?(?:,\s*(?:д\.|дом)\s*[^,\n]+)?(?:,\s*(?:кв\.|квартира|оф\.|офис)\s*[^,\n]*)?/giu,
+        /\b\d{6}\s*,(?:\s*Российская\s+Федерация\s*,)?(?:\s*[^,\n]+,\s*){0,2}(?:г\.|город)\s*[^,\n]+(?:,\s*(?:ул\.?|улица|наб\.?|набережная|пр\.?|пр-кт|просп\.?|проспект|пер\.?|переулок|б-р|бульвар|ш\.?|шоссе)\s*[^,\n]+)?(?:,\s*(?:д\.|дом)\s*[^,\n]+)?(?:,\s*(?:кв\.|квартира|оф\.|офис)\s*[^,\n]*)?/giu,
         (m) => {
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
@@ -1606,7 +1601,7 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /\b\d{6}\s*,\s*[^,\n]+,\s*ул\.?\s+[^,\n]+(?:,\s*[^,\n]+){0,14}/giu,
+        /\b\d{6}\s*,\s*[^,\n]+,\s*(?:ул\.?|улица|наб\.?|набережная|пр\.?|пр-кт|просп\.?|проспект|пер\.?|переулок|б-р|бульвар|ш\.?|шоссе)\s+[^,\n]+(?:,\s*[^,\n]+){0,14}/giu,
         (m) => {
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
@@ -1627,7 +1622,7 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /(?:^|[\s,;])(?:г\.|город)\s+[А-ЯЁA-Zа-яё\-]+(?:\s*,\s*ул\.\s*[^,\n]+)(?:,\s*д\.\s*[^,\n]+)?/giu,
+        /(?:^|[\s,;])(?:г\.|город)\s+[А-ЯЁA-Zа-яё\-]+(?:\s*,\s*(?:ул\.?|улица|наб\.?|набережная|пр\.?|пр-кт|просп\.?|проспект|пер\.?|переулок|б-р|бульвар|ш\.?|шоссе)\s*[^,\n]+)(?:,\s*д\.?\s*[^,\n]+)?/giu,
         (m) => {
           const full = m[0]
           const lead = /^[\s,;]/.test(full) ? 1 : 0
@@ -1689,7 +1684,7 @@ export function findSensitiveEntities(
             categoryId: 'premises' as const,
             placeholderTag: 'ПОМЕЩЕНИЕ' as const,
             typeLabel: 'Помещение / офис / кв.',
-            priority: 60,
+            priority: 20,
           }
         },
       ),
