@@ -9,8 +9,25 @@ import {
 
 type Row = FoundEntity & { replace: boolean }
 
+const REQUIRED_VEHICLE_CATEGORIES: { id: CategoryId; label: string }[] = [
+  { id: 'vin', label: 'VIN / кузов' },
+  { id: 'vehicle_plate', label: 'Госномер ТС' },
+  { id: 'pts', label: 'ПТС / ЭПТС' },
+]
+
+function ensureCategoryOptions(
+  base: ReadonlyArray<{ id: CategoryId; label: string }>,
+): { id: CategoryId; label: string }[] {
+  const out = [...base]
+  const known = new Set(out.map((c) => c.id))
+  for (const c of REQUIRED_VEHICLE_CATEGORIES) {
+    if (!known.has(c.id)) out.push(c)
+  }
+  return out
+}
+
 function defaultEnabledCategories(): Set<CategoryId> {
-  return new Set(CATEGORY_OPTIONS.map((c) => c.id))
+  return new Set(ensureCategoryOptions(CATEGORY_OPTIONS).map((c) => c.id))
 }
 
 export default function App() {
@@ -100,8 +117,16 @@ export default function App() {
   }, [])
 
   const enabledCount = useMemo(
-    () => CATEGORY_OPTIONS.filter((c) => enabledCategories.has(c.id)).length,
+    () =>
+      ensureCategoryOptions(CATEGORY_OPTIONS).filter((c) =>
+        enabledCategories.has(c.id),
+      ).length,
     [enabledCategories],
+  )
+
+  const categoryOptions = useMemo(
+    () => ensureCategoryOptions(CATEGORY_OPTIONS),
+    [],
   )
 
   return (
@@ -142,7 +167,7 @@ export default function App() {
           </button>
         </div>
         <div className="category-grid">
-          {CATEGORY_OPTIONS.map((c) => (
+          {categoryOptions.map((c) => (
             <label key={c.id} className="check">
               <input
                 type="checkbox"

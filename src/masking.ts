@@ -21,6 +21,9 @@ export type CategoryId =
   | 'fio'
   | 'passport'
   | 'contract_number'
+  | 'vin'
+  | 'vehicle_plate'
+  | 'pts'
   | 'document_date'
   | 'money_amount'
   | 'interest_rate'
@@ -46,6 +49,9 @@ export type PlaceholderTag =
   | 'ПАСПОРТНЫЕ_ДАННЫЕ'
   | 'НОМЕР_ДОГОВОРА'
   | 'НОМЕР_ПРИЛОЖЕНИЯ'
+  | 'VIN'
+  | 'ГОСНОМЕР'
+  | 'ПТС'
   | 'ДАТА'
   | 'СУММА'
   | 'СТАВКА'
@@ -77,6 +83,9 @@ export const CATEGORY_OPTIONS: {
   { id: 'fio', label: 'ФИО' },
   { id: 'passport', label: 'Паспортные данные' },
   { id: 'contract_number', label: 'Номер договора' },
+  { id: 'vin', label: 'VIN / кузов' },
+  { id: 'vehicle_plate', label: 'Госномер ТС' },
+  { id: 'pts', label: 'ПТС / ЭПТС' },
   { id: 'document_date', label: 'Даты' },
   { id: 'money_amount', label: 'Денежные суммы' },
   { id: 'interest_rate', label: 'Процентные ставки' },
@@ -154,9 +163,46 @@ function normalizeMoneyAmountKey(value: string): string {
   return d.length >= 4 ? d : normalizeForKey(value)
 }
 
+function extractVinPayload(value: string): string | null {
+  // VIN: 17 символов, латиница+цифры, без I/O/Q
+  const m = value.match(/\b([A-HJ-NPR-Z0-9]{17})\b/u)
+  return m?.[1] ?? null
+}
+
+function normalizeVinKey(value: string): string {
+  const payload = extractVinPayload(value)
+  return payload ? payload.toUpperCase() : normalizeForKey(value)
+}
+
+function normalizeVehiclePlateKey(value: string): string {
+  // Нормализация похожих латинских букв к кириллице
+  const map: Record<string, string> = {
+    A: 'А',
+    B: 'В',
+    E: 'Е',
+    K: 'К',
+    M: 'М',
+    H: 'Н',
+    O: 'О',
+    P: 'Р',
+    C: 'С',
+    T: 'Т',
+    Y: 'У',
+    X: 'Х',
+  }
+  const m = value.match(/\b([АВЕКМНОРСТУХABEKMHOPCTYXA]\d{3}[АВЕКМНОРСТУХABEKMHOPCTYXA]{2}\d{2,3})\b/u)
+  const raw = (m?.[1] ?? value).toUpperCase()
+  return raw.replace(/[ABEKMHOPCTYX]/g, (ch) => map[ch] ?? ch)
+}
+
 function normalizeInterestRateKey(value: string): string {
   const m = value.match(/(\d{1,3}(?:[.,]\d+)?)\s*%/u)
   return m ? m[1].replace(',', '.') : normalizeForKey(value)
+}
+
+function isValidPtsNumber(value: string): boolean {
+  const digits = value.replace(/[^\d]/g, '')
+  return digits.length >= 8 && digits.length <= 15
 }
 
 function normalizeDocumentDateKey(value: string): string {
@@ -551,6 +597,10 @@ function assignPlaceholders(matches: RawMatch[]): FoundEntity[] {
         ? normalizePersonNameKey(m.value)
         : m.categoryId === 'igk'
           ? normalizeIgkKey(m.value)
+          : m.categoryId === 'vin'
+            ? normalizeVinKey(m.value)
+            : m.categoryId === 'vehicle_plate'
+              ? normalizeVehiclePlateKey(m.value)
           : m.categoryId === 'org_ip' &&
               (m.placeholderTag === 'ОРГАНИЗАЦИЯ' || m.placeholderTag === 'ИП')
             ? normalizeOrgNameKey(m.value)
@@ -769,7 +819,7 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /\b(?:КПП|кпп)\b[\s.:—–-]+(\d{9})\b/gi,
+        /(?:^|[^\p{L}\p{N}_])(?:КПП|кпп)\s*(?:(?::|№)\s*)?(\d{9})(?=$|[^\p{L}\p{N}_])/giu,
         (m) => {
           const val = m[1] ?? m[0]
           const start = m.index! + m[0].indexOf(val)
@@ -884,7 +934,7 @@ export function findSensitiveEntities(
         text,
         new RegExp(
           '(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)\\s+' +
-            '(?:[«"][^,;\\n]{2,100}?[»"]?|[А-ЯЁA-Zа-яё0-9\\-]+(?:\\s+[А-ЯЁA-Zа-яё0-9\\-]+){0,4})' +
+            '(?:[«"][^,;\\n]{2,160}?|[А-ЯЁA-Zа-яё0-9\\-]+(?:\\s+[А-ЯЁA-Zа-яё0-9\\-]+){0,4})' +
             orgStop,
           'giu',
         ),
@@ -1173,6 +1223,45 @@ export function findSensitiveEntities(
       )
     }
 
+    // Лизинг: «договор(у) лизинга № ... от dd.dd.yyyy», а также «№ ... от ...» рядом со словами «договор...лизинга».
+    const leaseRes: RegExp[] = [
+      new RegExp(
+        `(?:по\\s+)?договор(?:у|а)?(?:\\s+лизинга)?[^\\n]{0,80}?${noNum}\\s*[^\\s,;\\n]{2,64}(?:\\s*от\\s*(?:0[1-9]|[12]\\d|3[01])\\.(?:0[1-9]|1[0-2])\\.(?:19|20)\\d{2})?`,
+        'giu',
+      ),
+      new RegExp(
+        `договор(?:у|а)?\\s+лизинга[^\\n]{0,80}?${noNum}\\s*[^\\s,;\\n]{2,64}\\s*от\\s*(?:0[1-9]|[12]\\d|3[01])\\.(?:0[1-9]|1[0-2])\\.(?:19|20)\\d{2}`,
+        'giu',
+      ),
+    ]
+    for (const re of leaseRes) {
+      raw.push(
+        ...collectRegexMatches(text, re, (m) => {
+          const full = m[0]
+          // хотим начинать плейсхолдер с «договор...», даже если в тексте было «по договору...»
+          const innerIdx = full.toLowerCase().indexOf('договор')
+          const baseStart = m.index! + (innerIdx >= 0 ? innerIdx : 0)
+          const inner = innerIdx >= 0 ? full.slice(innerIdx) : full
+
+          if (/^приложение\s*(?:№|\u2116|N|No)/iu.test(inner)) return null
+          const tok = tokenAfterLastNoSign(inner)
+          if (!tok || isContractClauseRef(tok)) return null
+
+          const r = trimMatchRange(inner, baseStart)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'contract_number' as const,
+            placeholderTag: 'НОМЕР_ДОГОВОРА' as const,
+            typeLabel: 'Номер договора (лизинг)' as const,
+            priority: cnPri + 1,
+          }
+        }),
+      )
+    }
+
     const apxRes: RegExp[] = [
       /Приложение\s*(?:№|\u2116)\.?\s*\d+/giu,
       /Приложение\s*N\s*o\.?\s*\d+/giu,
@@ -1289,6 +1378,31 @@ export function findSensitiveEntities(
     const sumPri = 51
     const sumTag = 'СУММА' as const
     const sumLabel = 'Денежная сумма' as const
+
+    // Суммы с прописью: захватываем целиком (цифры + (пропись) + рубли/копейки)
+    // Приоритет выше, чтобы не оставалась пропись в тексте.
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\b(?:\d{1,3}(?:\s+\d{3})+|\d{5,})(?:,\s*\d{2})?(?!\s*%)(?:\s*\([^)\n]{3,360}\))?\s*(?:руб\.?|рубля|рублей|рубль)(?:\s+\d{2}\s*копе(?:йка|йки|ек))?(?=$|[^\p{L}\p{N}_])/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          // не путаем с пунктами договора (и вообще «2.2.1» сюда не подходит по формату, но оставим защиту)
+          if (/^\d{1,2}\.\d{1,2}(?:\.\d+)?$/u.test(r.value)) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'money_amount' as const,
+            placeholderTag: sumTag,
+            typeLabel: sumLabel,
+            priority: sumPri + 6,
+          }
+        },
+      ),
+    )
+
     raw.push(
       ...collectRegexMatches(
         text,
@@ -1308,10 +1422,34 @@ export function findSensitiveEntities(
         },
       ),
     )
+
+    // Десятичные суммы (с пробелом после запятой) + опционально рубли рядом
     raw.push(
       ...collectRegexMatches(
         text,
-        /\b(?:\d{1,3}(?:\s+\d{3})+|\d{5,}),\d{2}(?!\s*%)\b/gu,
+        /\b(?:\d{1,3}(?:\s+\d{3})+|\d{5,}),\s*\d{2}(?:\s*(?:руб\.?|рубля|рублей|рубль))?(?=$|[^\p{L}\p{N}_])(?!\s*%)/giu,
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          // не ловим номера пунктов вроде 2.2.1 (на всякий случай, хотя тут запятая)
+          if (/^\d{1,2}\.\d{1,2}(?:\.\d+)?$/.test(r.value)) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'money_amount' as const,
+            placeholderTag: sumTag,
+            typeLabel: sumLabel,
+            priority: sumPri + 2,
+          }
+        },
+      ),
+    )
+
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /\b(?:\d{1,3}(?:\s+\d{3})+|\d{5,}),\s*\d{2}(?!\s*%)\b/gu,
         (m) => {
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
@@ -1351,6 +1489,136 @@ export function findSensitiveEntities(
         },
       ),
     )
+  }
+
+  if (enabled.has('vin')) {
+    const vinPri = 64
+    const vinTag = 'VIN' as const
+    const vinLabel = 'VIN / номер кузова' as const
+    const vinValue = '[A-HJ-NPR-Z0-9]{17}'
+    const vinRes: RegExp[] = [
+      new RegExp(`Идентификационный\\s+номер\\s*\\(VIN\\)\\s*[:\\-–]\\s*${vinValue}`, 'giu'),
+      new RegExp(`\\bVIN\\s*[:\\-–]\\s*${vinValue}`, 'giu'),
+      new RegExp(`Номер\\s+кузова\\s*[:\\-–]\\s*${vinValue}`, 'giu'),
+    ]
+    for (const re of vinRes) {
+      raw.push(
+        ...collectRegexMatches(text, re, (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          if (!extractVinPayload(r.value)) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'vin' as const,
+            placeholderTag: vinTag,
+            typeLabel: vinLabel,
+            priority: vinPri,
+          }
+        }),
+      )
+    }
+  }
+
+  if (enabled.has('vehicle_plate')) {
+    const platePri = 63
+    const plateTag = 'ГОСНОМЕР' as const
+    const plateLabel = 'Госномер ТС' as const
+    const plateValue = '[АВЕКМНОРСТУХABEKMHOPCTYXA]\\d{3}[АВЕКМНОРСТУХABEKMHOPCTYXA]{2}\\d{2,3}'
+    const plateRes: RegExp[] = [
+      new RegExp(`Государственный\\s+регистрационный\\s+знак\\s*[:\\-–]\\s*${plateValue}`, 'giu'),
+      new RegExp(`\\bГосномер\\s*[:\\-–]\\s*${plateValue}`, 'giu'),
+      new RegExp(`Регистрационный\\s+знак\\s*[:\\-–]\\s*${plateValue}`, 'giu'),
+    ]
+    for (const re of plateRes) {
+      raw.push(
+        ...collectRegexMatches(text, re, (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'vehicle_plate' as const,
+            placeholderTag: plateTag,
+            typeLabel: plateLabel,
+            priority: platePri,
+          }
+        }),
+      )
+    }
+  }
+
+  if (enabled.has('pts')) {
+    const ptsPri = 62
+    const ptsTag = 'ПТС' as const
+    const ptsLabel = 'ПТС / ЭПТС' as const
+    // 8–15 цифр, допускаем пробелы внутри (например: 16430 0222)
+    const ptsNum = '\\d[\\d\\s]{6,18}\\d'
+    // High-priority: «ПТС/ЭПТС … электронный паспорт … (оформлен dd.mm.yyyy,) … номер 16430 0222»
+    // Важно: захватываем строку целиком до переноса, чтобы дата не маскировалась отдельно.
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(
+          `(?:^|[\\s\\u00A0(\\[])(?:(?:ПТС|ЭПТС)\\s*[:\\-–]?\\s*)?электронный\\s+паспорт[^\\n]{0,320}?(?:оформлен\\s+(?:0[1-9]|[12]\\d|3[01])\\.(?:0[1-9]|1[0-2])\\.(?:19|20)\\d{2}[^\\n]{0,80}?)?номер[^\\d\\n]{0,30}${ptsNum}`,
+          'giu',
+        ),
+        (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          const numM = r.value.match(new RegExp(ptsNum, 'u'))
+          if (!numM || !isValidPtsNumber(numM[0])) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'pts' as const,
+            placeholderTag: ptsTag,
+            typeLabel: ptsLabel,
+            priority: ptsPri + 10,
+          }
+        },
+      ),
+    )
+
+    const ptsRes: RegExp[] = [
+      new RegExp(
+        `(?:ПТС|ЭПТС)\\s*:\\s*электронный\\s+паспорт[^\\n]{0,300}?\\bномер\\s+${ptsNum}\\b`,
+        'giu',
+      ),
+      new RegExp(
+        `(?:ПТС|ЭПТС)\\b\\s+электронный\\s+паспорт[^\\n]{0,300}?\\bномер\\s+${ptsNum}\\b`,
+        'giu',
+      ),
+      new RegExp(`\\bЭПТС\\s+${ptsNum}\\b`, 'giu'),
+      new RegExp(
+        `электронный\\s+паспорт[^\\n]{0,300}?\\bномер\\s+${ptsNum}\\b`,
+        'giu',
+      ),
+      new RegExp(`номер\\s+электронного\\s+паспорта\\s+${ptsNum}\\b`, 'giu'),
+      new RegExp(`\\bПТС\\s+электронный\\s+паспорт\\s+номер\\s+${ptsNum}\\b`, 'giu'),
+    ]
+    for (const re of ptsRes) {
+      raw.push(
+        ...collectRegexMatches(text, re, (m) => {
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          const numM = r.value.match(new RegExp(ptsNum, 'u'))
+          if (!numM || !isValidPtsNumber(numM[0])) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'pts' as const,
+            placeholderTag: ptsTag,
+            typeLabel: ptsLabel,
+            priority: ptsPri,
+          }
+        }),
+      )
+    }
   }
 
   if (enabled.has('bank')) {
