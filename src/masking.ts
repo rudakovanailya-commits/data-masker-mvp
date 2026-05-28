@@ -466,13 +466,83 @@ function isValidAddressCandidate(value: string): boolean {
   // у настоящего адреса должны быть признаки адреса
   const hasAddressMarkers =
     /\b\d{6}\b/u.test(v) ||
-    /\b(?:г\.|город|ул\.|улица|д\.|дом|корп\.|к\.|кв\.|оф\.|пом\.|литера)\b/iu.test(v)
+    /\b(?:г\.|город|ул\.|улица|наб\.|набережная|проспект|д\.|дом|корп\.|к\.|кв\.|оф\.|офис|пом\.|помещение|лит\.|литера|а\/я|санкт-петербург|москва)\b/iu.test(
+      v,
+    )
 
   if (!hasAddressMarkers) {
     return false
   }
 
   return true
+}
+
+/** Метки явного адреса (длинные ветки раньше короткой «Адрес») */
+const LABELED_ADDRESS_LABEL_RE =
+  /(?:Юридический\s+адрес|Почтовый\s+адрес|Адрес\s+места\s+нахождения|Адрес\s+регистрации|Место\s+нахождения|Место\s+регистрации|Место\s+жительства|зарегистрирован\s+по\s+адресу)\s*:?\s*|Адрес\s*:\s*/giu
+
+/** Новая строка реквизитов / следующего блока — конец многострочного адреса */
+const LABELED_ADDRESS_LINE_STOP_RE =
+  /^(?:ИНН|КПП|ОГРН(?:ИП)?|БИК|Расчётный\s+счёт|р\/\s*с|к\/\s*с|Банк|Телефон|Email|E-mail|Директор|Генеральный\s+директор|Подпись|Покупатель|Продавец|Исполнитель|Заказчик)\b/iu
+
+function isLabeledAddressContinuationLine(line: string): boolean {
+  const t = line.trim()
+  if (!t) return false
+  if (LABELED_ADDRESS_LINE_STOP_RE.test(t)) return false
+  if (/^в\s+адрес\b/iu.test(t)) return false
+  if (/^адреса\s+и\s+реквизиты/iu.test(t)) return false
+  return (
+    /(?:\d{6}|г\.|город|ул\.|улица|наб\.|набережная|проспект|д\.|дом|лит\.|пом\.|офис|кв\.|а\/я|российская|республика|санкт|москва|область|край)/iu.test(
+      t,
+    ) || /^[А-ЯЁа-яё][А-ЯЁа-яё0-9\s.,\-]{1,100}$/u.test(t)
+  )
+}
+
+/** Тело адреса с меткой: до 4 строк, не более ~360 символов от метки */
+function extractLabeledAddressRange(
+  text: string,
+  labelStart: number,
+): { start: number; end: number; value: string } | null {
+  const head = text.slice(labelStart)
+  LABELED_ADDRESS_LABEL_RE.lastIndex = 0
+  const labelMatch = LABELED_ADDRESS_LABEL_RE.exec(head)
+  if (!labelMatch || labelMatch.index !== 0) return null
+
+  const maxSpan = 380
+  let lineStart = labelStart + labelMatch[0].length
+  let end = lineStart
+
+  for (let lineIdx = 0; lineIdx < 4 && lineStart - labelStart < maxSpan; lineIdx++) {
+    const nl = text.indexOf('\n', lineStart)
+    const lineEnd = nl === -1 ? text.length : nl
+    const line = text.slice(lineStart, lineEnd)
+    if (lineIdx > 0 && !isLabeledAddressContinuationLine(line)) break
+    end = lineEnd
+    if (nl === -1) break
+    lineStart = nl + 1
+  }
+
+  const rawValue = text.slice(labelStart, end).replace(/\r\n/g, '\n').trimEnd()
+  if (!rawValue) return null
+  return { start: labelStart, end: labelStart + rawValue.length, value: rawValue }
+}
+
+/** «пом. N» внутри только что найденного адреса с меткой — не выделять как помещение */
+function isPremisesInsideLabeledAddress(text: string, start: number, end: number): boolean {
+  const windowStart = Math.max(0, start - 420)
+  const before = text.slice(windowStart, start)
+  let lastLabelEnd = -1
+  LABELED_ADDRESS_LABEL_RE.lastIndex = 0
+  let lm: RegExpExecArray | null
+  while ((lm = LABELED_ADDRESS_LABEL_RE.exec(before)) !== null) {
+    lastLabelEnd = windowStart + lm.index + lm[0].length
+  }
+  if (lastLabelEnd < 0) return false
+  const segment = text.slice(lastLabelEnd, end)
+  if (/(?:ИНН|КПП|ОГРН(?:ИП)?)\b/i.test(segment)) return false
+  return /(?:\d{6}|г\.|город|ул\.|улица|наб\.|набережная|д\.|дом|лит\.|пом\.|помещение|офис|кв\.)/i.test(
+    segment,
+  )
 }
 
 /** Не считать «ООО/ПАО …» названием организации в строке «Банк: …» */
@@ -1914,55 +1984,26 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('address')) {
-    /** До конца строки или перед банковским блоком */
-    const addrBankStop = '(?=\\n|Банковские\\s+реквизиты|\\s*БИК\\b|\\s*р\\/\\s*с|\\s*к\\/\\s*с|$)'
-
-    // Явная метка «Почтовый адрес: ...» (целиком, без углубления в общие правила адресов)
+    // Адреса с явной меткой (в т.ч. 2–3 продолжения на следующих строках)
     raw.push(
-      ...collectRegexMatches(
-        text,
-        /Почтовый\s+адрес\s*:\s*\d{6}(?:\s*,)?\s*(?:Республика\s+[А-ЯЁа-яё\- ]+\s*,\s*)?(?:г\.|город)\s*[^\n]{3,160}/giu,
-        (m) => {
-          const r0 = trimMatchRange(m[0], m.index!)
-          if (!r0 || r0.value.length < 18) return null
-          const trimmed = trimAddressCandidate(r0.value)
-          if (trimmed.length < 18) return null
-          return {
-            start: r0.start,
-            end: r0.start + trimmed.length,
-            value: trimmed,
-            categoryId: 'address' as const,
-            placeholderTag: 'АДРЕС' as const,
-            typeLabel: 'Почтовый адрес',
-            priority: 66,
-          }
-        },
-      ),
-    )
-
-    raw.push(
-      ...collectRegexMatches(
-        text,
-        /(?:адрес\s+регистрации|место\s+регистрации|зарегистрирован\s+по\s+адресу|место\s+жительства)\s*:?\s*[^\n]+/giu,
-        (m) => {
-          const r0 = trimMatchRange(m[0], m.index!)
-          if (!r0 || r0.value.length < 10) return null
-          let { start, value } = r0
-          const vt = value.replace(/\.+\s*$/u, '').trimEnd()
-          if (vt.length < 10) return null
-          const trimmed = trimAddressCandidate(vt)
-          if (trimmed.length < 10) return null
-          return {
-            start,
-            end: start + trimmed.length,
-            value: trimmed,
-            categoryId: 'address' as const,
-            placeholderTag: 'АДРЕС' as const,
-            typeLabel: 'Адрес',
-            priority: 63,
-          }
-        },
-      ),
+      ...collectRegexMatches(text, LABELED_ADDRESS_LABEL_RE, (m) => {
+        const block = extractLabeledAddressRange(text, m.index!)
+        if (!block || block.value.length < 8) return null
+        if (/на\s+следующий/i.test(block.value)) return null
+        const trimmed = trimAddressCandidate(block.value)
+        if (trimmed.length < 8) return null
+        if (!isValidAddressCandidate(trimmed)) return null
+        const isPostal = /почтовый\s+адрес/i.test(trimmed)
+        return {
+          start: block.start,
+          end: block.start + trimmed.length,
+          value: trimmed,
+          categoryId: 'address' as const,
+          placeholderTag: 'АДРЕС' as const,
+          typeLabel: isPostal ? 'Почтовый адрес' : 'Адрес',
+          priority: isPostal ? 66 : 65,
+        }
+      }),
     )
 
     raw.push(
@@ -1990,36 +2031,6 @@ export function findSensitiveEntities(
       ),
     )
 
-    raw.push(
-      ...collectRegexMatches(
-        text,
-        new RegExp(
-          '(?:юридический\\s+адрес|адрес\\s+места\\s+нахождения|место\\s+нахождения|адрес\\s+регистрации)\\s*:?\\s*[^\\n]+?' + addrBankStop,
-          'giu',
-        ),
-        (m) => {
-          const r0 = trimMatchRange(m[0], m.index!)
-          if (!r0 || r0.value.length < 8) return null
-          let { start, value } = r0
-          const vt = value.replace(/\.+\s*$/u, '').trimEnd()
-          if (vt.length < 8) return null
-          if (/на\s+следующий/i.test(vt)) return null
-          const trimmed = trimAddressCandidate(vt)
-          if (trimmed.length < 8) return null
-          if (!isValidAddressCandidate(trimmed)) return null
-          
-          return {
-            start,
-            end: start + trimmed.length,
-            value: trimmed,
-            categoryId: 'address' as const,
-            placeholderTag: 'АДРЕС' as const,
-            typeLabel: 'Адрес',
-            priority: 62,
-          }
-        },
-      ),
-    )
     raw.push(
       ...collectRegexMatches(
         text,
@@ -2120,6 +2131,7 @@ export function findSensitiveEntities(
         (m) => {
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
+          if (isPremisesInsideLabeledAddress(text, r.start, r.end)) return null
           return {
             start: r.start,
             end: r.end,
