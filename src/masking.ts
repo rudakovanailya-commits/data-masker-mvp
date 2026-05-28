@@ -259,6 +259,16 @@ function normalizePersonNameKey(value: string): string {
     return `fio2:${sur}:${i1}${i2}`
   }
 
+  const initLastM = collapse.match(
+    /^([А-ЯЁ])\.\s*([А-ЯЁ])\.\s*([А-ЯЁ][а-яё\-]{1,30})$/u,
+  )
+  if (initLastM) {
+    const sur = stemRussianSurnameToken(initLastM[3])
+    const i1 = initLastM[1]!.toLowerCase()
+    const i2 = initLastM[2]!.toLowerCase()
+    return `fio2:${sur}:${i1}${i2}`
+  }
+
   const tokens = collapse
     .split(' ')
     .map((t) => t.replace(/^[^\p{L}0-9]+|[^\p{L}0-9]+$/gu, ''))
@@ -902,7 +912,7 @@ export function findSensitiveEntities(
   if (enabled.has('org_ip')) {
     /** Остановка юрлица: запятая, ;, перевод строки, реквизиты, адрес, банк, следующее юрлицо */
     const orgStop =
-      '(?=,|;|\\.|\\n|\\s*\\(|\\s+(?:с|и|между)\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)\\b|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)\\b|\\s+адрес\\b|\\s+юридический\\b|\\s+г\\.\\s|\\s+город\\b|\\s+ул\\.\\s|\\s+улица\\b|\\s+р\\/\\s*с\\b|\\s+р\\.с\\.|\\s+к\\/\\s*с\\b|\\s+БИК\\b|\\s+[Бб]анк\\b|$)'
+      '(?=,|;|\\.|\\n|\\s*\\(|\\s+[А-ЯЁ]\\.|\\s+(?:в|для|по|на|к|у|о|об|от|с|и)(?=$|[^\\p{L}\\p{N}_])|\\s+(?:с|и|между)\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)(?=$|[^\\p{L}\\p{N}_])|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)(?=$|[^\\p{L}\\p{N}_])|\\s+адрес\\b|\\s+юридический\\b|\\s+г\\.\\s|\\s+город\\b|\\s+ул\\.\\s|\\s+улица\\b|\\s+р\\/\\s*с\\b|\\s+р\\.с\\.|\\s+к\\/\\s*с\\b|\\s+БИК(?=$|[^\\p{L}\\p{N}_])|\\s+[Бб]анк\\b|$)'
 
     raw.push(
       ...collectRegexMatches(
@@ -934,7 +944,15 @@ export function findSensitiveEntities(
         text,
         new RegExp(
           '(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)\\s+' +
-            '(?:[«"][^,;\\n]{2,160}?|[А-ЯЁA-Zа-яё0-9\\-]+(?:\\s+[А-ЯЁA-Zа-яё0-9\\-]+){0,4})' +
+            '(?:' +
+            // Имя в кавычках должно заканчиваться на закрывающей кавычке.
+            // Поддержка 1 уровня вложенных кавычек вида: «ЛК «лизингопт»»
+            '«(?:[^«»\\n]{1,160}|«[^»\\n]{1,80}»|\"[^\"\\n]{1,80}\")+»' +
+            '|"(?:(?:[^"\\n]{1,160})|"(?:[^"\\n]{1,80})")+"' +
+            '|' +
+            // Без кавычек — короткое имя (как было)
+            '[А-ЯЁA-Zа-яё0-9\\-]+(?:\\s+[А-ЯЁA-Zа-яё0-9\\-]+){0,4}' +
+            ')' +
             orgStop,
           'giu',
         ),
@@ -1050,11 +1068,82 @@ export function findSensitiveEntities(
         },
       ),
     )
+
+    // Подписи вида «Д.В.Павлов», «Д.В. Павлов», «Д. В. Павлов»
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?:^|[\s,;:(\[]|_{2,})([А-ЯЁ]\.\s*[А-ЯЁ]\.\s*[А-ЯЁ][а-яё]{1,32})(?=$|[\s,.:;)\]\n_-])/gu,
+        (m) => {
+          const rawVal = m[1] ?? ''
+          if (!rawVal) return null
+          // небольшой фильтр против мусора; фамилия должна быть русской
+          const sm = rawVal.match(/^([А-ЯЁ])\.\s*([А-ЯЁ])\.\s*([А-ЯЁ][а-яё]{1,32})$/u)
+          if (!sm) return null
+          const start = m.index! + m[0].indexOf(rawVal)
+          const r = trimMatchRange(rawVal, start)
+          if (!r) return null
+
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'fio' as const,
+            placeholderTag: 'ФИО' as const,
+            typeLabel: 'ФИО (инициалы + фамилия)',
+            priority: 55,
+          }
+        },
+      ),
+    )
   }
 
   if (enabled.has('passport')) {
     const passTag = 'ПАСПОРТНЫЕ_ДАННЫЕ' as const
     const passLabel = 'Паспортные данные' as const
+
+    // Доверенности/анкеты: «паспорт 40 12 247258, выданный ... 03 марта 2011 года, к/п 780-035»
+    // Важно: маскируем единым блоком, останавливаемся перед адресом/регистрацией/новым смысловым блоком.
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(
+          String.raw`(?:^|[^\p{L}\p{N}_])(` +
+            String.raw`паспорт\s+(?:\d{2}\s*\d{2}|\d{4})\s*(?:(?:№|N)\s*)?\d{6}` +
+            String.raw`\s*,?\s*(?:выдан|выданный|выдана|выданной)[^\n]{0,420}?` +
+            String.raw`(?:` +
+            String.raw`(?:0[1-9]|[12]\d|3[01])\.(?:0[1-9]|1[0-2])\.(?:19|20)\d{2}(?:\s*г\.?)?` +
+            String.raw`|` +
+            String.raw`(?:[12]?\d|3[01])\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)\s+(?:19|20)\d{2}(?:\s+года?)?` +
+            String.raw`)` +
+            String.raw`(?:[^\n]{0,140}?(?:,|\s)\s*(?:к\/п|код\s+подразделения|№\s*подр\.?|подр\.|подразделени[ея])\s*\d{3}-\d{3})?` +
+            String.raw`)` +
+            String.raw`(?=,?\s*(?:` +
+            String.raw`зарегистрированн(?:ый|ая|ое|ые)|` +
+            String.raw`зарегистрирован(?:ный|ная)?\s+по\s+адресу|` +
+            String.raw`адрес\s+регистрации|место\s+регистрации|` +
+            String.raw`проживающ(?:ий|ая)|` +
+            String.raw`представлять|настоящей\s+доверенностью` +
+            String.raw`)(?=$|[^\p{L}\p{N}_])|\n|$)`,
+          'giu',
+        ),
+        (m) => {
+          const full = m[1] ?? m[0]
+          const start = m.index! + m[0].indexOf(full)
+          const r = trimMatchRange(full, start)
+          if (!r || r.value.length < 20) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'passport' as const,
+            placeholderTag: passTag,
+            typeLabel: passLabel,
+            priority: 71,
+          }
+        },
+      ),
+    )
 
     raw.push(
       ...collectRegexMatches(
@@ -1201,6 +1290,33 @@ export function findSensitiveEntities(
       new RegExp(`Договор\\s*${noNum}\\s*\\S+`, 'giu'),
       new RegExp(`Контракт\\s*${noNum}\\s*\\S+`, 'giu'),
     ]
+
+    // Договор(а/у) №/N 1786656 от 27.04.2017 — важна дата целиком.
+    // Не считаем пунктами (1.1/2.2.1): номер только цифры (>=3 знаков).
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?:^|[^\p{L}\p{N}_])(договор(?:у|а)?\s*(?:№|\u2116|N)\s*\d{3,12}\s*от\s*(?:0[1-9]|[12]\d|3[01])\.(?:0[1-9]|1[0-2])\.(?:19|20)\d{2})(?=$|[^\p{L}\p{N}_])/giu,
+        (m) => {
+          const full = m[1] ?? m[0]
+          const start = m.index! + m[0].indexOf(full)
+          const r = trimMatchRange(full, start)
+          if (!r) return null
+          // дополнительная защита от "договор № 1.1" (не пройдёт по \d{3,12}, но оставим)
+          const nm = r.value.match(/(?:№|\u2116|N)\s*([^\s]+)/iu)?.[1] ?? ''
+          if (nm && isContractClauseRef(nm)) return null
+          return {
+            start: r.start,
+            end: r.end,
+            value: r.value,
+            categoryId: 'contract_number' as const,
+            placeholderTag: 'НОМЕР_ДОГОВОРА' as const,
+            typeLabel: 'Номер договора / документа' as const,
+            priority: cnPri + 2,
+          }
+        },
+      ),
+    )
     for (const re of contractRes) {
       raw.push(
         ...collectRegexMatches(text, re, (m) => {
