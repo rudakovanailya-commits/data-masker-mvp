@@ -112,12 +112,16 @@ function normalizeForKey(value: string): string {
 
 /** Нормализация кавычек в названии организации для группировки плейсхолдера */
 function normalizeOrgNameKey(value: string): string {
-  return value
+  const v = value
     .trim()
     .replace(/\s+/g, ' ')
     .replace(/[""„]/g, '"')
-    .replace(/[«»]/g, '«')
     .toLowerCase()
+  const ruQuoted = v.match(/«(?:[^»]+|«[^»]+)»/u)
+  if (ruQuoted) return ruQuoted[0]
+  const enQuoted = v.match(/"(?:[^"]+|"[^"]+)"/u)
+  if (enQuoted) return enQuoted[0]
+  return v
 }
 
 /** Снятие типичных падежных окончаний с одного слова (фамилия) */
@@ -826,6 +830,28 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('kpp')) {
+    // ИНН/КПП 1234567890/177101001 или ИНН/КПП [ИНН_3]/177101001
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?:^|[^\p{L}\p{N}_])ИНН\s*\/\s*КПП\s*(?:\d{10,12}|\[ИНН_\d+\])\s*\/\s*(\d{9})(?=$|[^\p{L}\p{N}_])/giu,
+        (m) => {
+          const val = m[1] ?? ''
+          if (!val) return null
+          const start = m.index! + m[0].lastIndexOf(val)
+          return {
+            start,
+            end: start + val.length,
+            value: val,
+            categoryId: 'kpp' as const,
+            placeholderTag: 'КПП' as const,
+            typeLabel: 'КПП (ИНН/КПП)',
+            priority: 75,
+          }
+        },
+      ),
+    )
+
     raw.push(
       ...collectRegexMatches(
         text,
@@ -910,16 +936,24 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('org_ip')) {
-    /** Остановка юрлица: запятая, ;, перевод строки, реквизиты, адрес, банк, следующее юрлицо */
+    /** После закрывающей кавычки имени — пробел/пунктуация/конец (имя уже ограничено «…») */
+    const orgStopQuoted =
+      '(?=\\s|,|;|\\.|\\n|\\)|\\]|\\s*\\(|\\s+именуем(?:ое|ый|ая|ые)?(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+лице(?=$|[^\\p{L}\\p{N}_])|\\s+договор(?:у|а|е|ом)?(?=$|[^\\p{L}\\p{N}_])|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)(?=$|[^\\p{L}\\p{N}_])|\\s+адрес\\b|\\s+юридический\\b|$)'
+    /** Без кавычек — строже: предлоги, следующее юрлицо, реквизиты */
     const orgStop =
-      '(?=,|;|\\.|\\n|\\s*\\(|\\s+[А-ЯЁ]\\.|\\s+(?:в|для|по|на|к|у|о|об|от|с|и)(?=$|[^\\p{L}\\p{N}_])|\\s+(?:с|и|между)\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)(?=$|[^\\p{L}\\p{N}_])|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)(?=$|[^\\p{L}\\p{N}_])|\\s+адрес\\b|\\s+юридический\\b|\\s+г\\.\\s|\\s+город\\b|\\s+ул\\.\\s|\\s+улица\\b|\\s+р\\/\\s*с\\b|\\s+р\\.с\\.|\\s+к\\/\\s*с\\b|\\s+БИК(?=$|[^\\p{L}\\p{N}_])|\\s+[Бб]анк\\b|$)'
+      '(?=,|;|\\.|\\n|\\s*\\(|\\s+[А-ЯЁ]\\.|\\s+(?:в|для|по|на|к|у|о|об|от|с|и)(?=$|[^\\p{L}\\p{N}_])|\\s+именуем(?:ое|ый|ая|ые)?(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+лице(?=$|[^\\p{L}\\p{N}_])|\\s+договор(?:у|а|е|ом)?(?=$|[^\\p{L}\\p{N}_])|\\s+(?:с|и|между)\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)(?=$|[^\\p{L}\\p{N}_])|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)(?=$|[^\\p{L}\\p{N}_])|\\s+адрес\\b|\\s+юридический\\b|\\s+г\\.\\s|\\s+город\\b|\\s+ул\\.\\s|\\s+улица\\b|\\s+р\\/\\s*с\\b|\\s+р\\.с\\.|\\s+к\\/\\s*с\\b|\\s+БИК(?=$|[^\\p{L}\\p{N}_])|\\s+[Бб]анк\\b|$)'
+
+    // «…»: вложенные « в имени до первого » (линейно). "…": ветка на 2 или 3 кавычки, без (A|B)+
+    const orgQuotedRu = '«[^»\\n]{1,160}»'
+    const orgQuotedEn = '"(?:[^"\\n]{1,160}"[^"\\n]{1,80}|[^"\\n]{1,160})"'
 
     raw.push(
       ...collectRegexMatches(
         text,
         new RegExp(
-          '(?:Обществ[ао]|ОБЩЕСТВ[АО])\\s+с\\s+ограниченной\\s+ответственностью\\s*[«"]([^«"»\\n]{2,120})[»"]' +
-            orgStop,
+          '(?:Обществ[ао]|ОБЩЕСТВ[АО])\\s+с\\s+ограниченной\\s+ответственностью\\s*' +
+            orgQuotedRu +
+            orgStopQuoted,
           'giu',
         ),
         (m) => {
@@ -945,15 +979,16 @@ export function findSensitiveEntities(
         new RegExp(
           '(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)\\s+' +
             '(?:' +
-            // Имя в кавычках должно заканчиваться на закрывающей кавычке.
-            // Поддержка 1 уровня вложенных кавычек вида: «ЛК «лизингопт»»
-            '«(?:[^«»\\n]{1,160}|«[^»\\n]{1,80}»|\"[^\"\\n]{1,80}\")+»' +
-            '|"(?:(?:[^"\\n]{1,160})|"(?:[^"\\n]{1,80})")+"' +
+            orgQuotedRu +
+            orgStopQuoted +
+            '|' +
+            orgQuotedEn +
+            orgStopQuoted +
             '|' +
             // Без кавычек — короткое имя (как было)
             '[А-ЯЁA-Zа-яё0-9\\-]+(?:\\s+[А-ЯЁA-Zа-яё0-9\\-]+){0,4}' +
-            ')' +
-            orgStop,
+            orgStop +
+            ')',
           'giu',
         ),
         (m) => {
@@ -1284,11 +1319,12 @@ export function findSensitiveEntities(
   if (enabled.has('contract_number')) {
     const cnPri = 68
     const noNum = '(?:№|\\u2116)'
+    const contractToken = '[^\\s,;\\n]{2,64}'
     const contractRes: RegExp[] = [
-      new RegExp(`Государственный\\s+контракт\\s+[\\s\\S]{0,200}?${noNum}\\s*\\S+`, 'giu'),
-      new RegExp(`к\\s+Договору\\s*${noNum}\\s*\\S+`, 'giu'),
-      new RegExp(`Договор\\s*${noNum}\\s*\\S+`, 'giu'),
-      new RegExp(`Контракт\\s*${noNum}\\s*\\S+`, 'giu'),
+      new RegExp(`Государственный\\s+контракт\\s+[^\\n]{0,200}?${noNum}\\s*${contractToken}`, 'giu'),
+      new RegExp(`к\\s+Договору\\s*${noNum}\\s*${contractToken}`, 'giu'),
+      new RegExp(`Договор\\s*${noNum}\\s*${contractToken}`, 'giu'),
+      new RegExp(`Контракт\\s*${noNum}\\s*${contractToken}`, 'giu'),
     ]
 
     // Договор(а/у) №/N 1786656 от 27.04.2017 — важна дата целиком.
@@ -1880,6 +1916,29 @@ export function findSensitiveEntities(
   if (enabled.has('address')) {
     /** До конца строки или перед банковским блоком */
     const addrBankStop = '(?=\\n|Банковские\\s+реквизиты|\\s*БИК\\b|\\s*р\\/\\s*с|\\s*к\\/\\s*с|$)'
+
+    // Явная метка «Почтовый адрес: ...» (целиком, без углубления в общие правила адресов)
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /Почтовый\s+адрес\s*:\s*\d{6}(?:\s*,)?\s*(?:Республика\s+[А-ЯЁа-яё\- ]+\s*,\s*)?(?:г\.|город)\s*[^\n]{3,160}/giu,
+        (m) => {
+          const r0 = trimMatchRange(m[0], m.index!)
+          if (!r0 || r0.value.length < 18) return null
+          const trimmed = trimAddressCandidate(r0.value)
+          if (trimmed.length < 18) return null
+          return {
+            start: r0.start,
+            end: r0.start + trimmed.length,
+            value: trimmed,
+            categoryId: 'address' as const,
+            placeholderTag: 'АДРЕС' as const,
+            typeLabel: 'Почтовый адрес',
+            priority: 66,
+          }
+        },
+      ),
+    )
 
     raw.push(
       ...collectRegexMatches(
