@@ -10,7 +10,11 @@ import {
 import { OfficialBanner, TrustFooter, UnofficialHostWarning } from './TrustChrome'
 import { downloadReplacementMap } from './replacementMap'
 import { isAllowedHostname } from './trustConfig'
-import { readTxtFile, validateTxtFile } from './txtFileUpload'
+import {
+  EMPTY_DOCX_ERROR,
+  readTextFromFile,
+  validateDocumentFile,
+} from './documentFileUpload'
 
 type Row = FoundEntity & { replace: boolean }
 
@@ -49,7 +53,7 @@ export default function App() {
   const [copyHint, setCopyHint] = useState<string | null>(null)
   const [usageGuideOpen, setUsageGuideOpen] = useState(false)
   const [sourceFileHint, setSourceFileHint] = useState<string | null>(null)
-  const txtFileInputRef = useRef<HTMLInputElement>(null)
+  const documentFileInputRef = useRef<HTMLInputElement>(null)
 
   const hasRows = rows.length > 0
   const hasReplaceableRows = rows.some((r) => r.replace)
@@ -127,31 +131,37 @@ export default function App() {
     setSourceFileHint(null)
   }, [])
 
-  const handleTxtFilePick = useCallback(() => {
-    txtFileInputRef.current?.click()
+  const handleDocumentFilePick = useCallback(() => {
+    documentFileInputRef.current?.click()
   }, [])
 
-  const handleTxtFileChange = useCallback(
+  const handleDocumentFileChange = useCallback(
     async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0]
       e.target.value = ''
       if (!file) return
 
-      const validationError = validateTxtFile(file)
+      const validationError = validateDocumentFile(file)
       if (validationError) {
         setSourceFileHint(validationError)
         return
       }
 
       try {
-        const text = await readTxtFile(file)
+        const text = await readTextFromFile(file)
         setSourceText(text)
         setRows([])
         setResultText('')
         setCopyHint(null)
         setSourceFileHint(null)
-      } catch {
-        setSourceFileHint('Не удалось прочитать файл.')
+      } catch (err) {
+        if (err instanceof Error && err.message === EMPTY_DOCX_ERROR) {
+          setSourceFileHint(
+            'Не удалось извлечь текст из .docx. Возможно, документ содержит только скан или изображение.',
+          )
+        } else {
+          setSourceFileHint('Не удалось прочитать файл.')
+        }
       }
     },
     [],
@@ -215,20 +225,20 @@ export default function App() {
           </label>
           <div className="source-upload">
             <input
-              ref={txtFileInputRef}
+              ref={documentFileInputRef}
               type="file"
               className="source-upload__input"
-              accept=".txt,text/plain"
-              onChange={handleTxtFileChange}
+              accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              onChange={handleDocumentFileChange}
               tabIndex={-1}
               aria-hidden
             />
             <button
               type="button"
               className="btn btn--outline source-upload__btn"
-              onClick={handleTxtFilePick}
+              onClick={handleDocumentFilePick}
             >
-              Загрузить .txt
+              Загрузить .txt / .docx
             </button>
             <p className="source-upload__note">
               Файл читается локально в браузере и не отправляется на сервер.
