@@ -7,6 +7,7 @@ import {
   type FoundEntity,
 } from './masking'
 import { OfficialBanner, TrustFooter, UnofficialHostWarning } from './TrustChrome'
+import { downloadReplacementMap } from './replacementMap'
 import { isAllowedHostname } from './trustConfig'
 
 type Row = FoundEntity & { replace: boolean }
@@ -46,6 +47,7 @@ export default function App() {
   const [copyHint, setCopyHint] = useState<string | null>(null)
 
   const hasRows = rows.length > 0
+  const hasReplaceableRows = rows.some((r) => r.replace)
 
   const toggleCategory = useCallback((id: CategoryId) => {
     setEnabledCategories((prev) => {
@@ -106,6 +108,11 @@ export default function App() {
     a.click()
     URL.revokeObjectURL(url)
   }, [resultText])
+
+  const handleDownloadReplacementMap = useCallback(() => {
+    if (!hasRows) return
+    downloadReplacementMap(rows)
+  }, [rows, hasRows])
 
   const handleClearSource = useCallback(() => {
     setSourceText('')
@@ -284,11 +291,27 @@ export default function App() {
           >
             Скачать .txt
           </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={handleDownloadReplacementMap}
+            disabled={!hasRows}
+          >
+            Скачать карту замен .txt
+          </button>
           <button type="button" className="btn btn--danger" onClick={handleClearAll}>
             Очистить всё
           </button>
           {copyHint ? <span className="hint">{copyHint}</span> : null}
         </div>
+        {hasRows ? (
+          <p className="replacement-map-warning" role="note">
+            Карта замен содержит исходные чувствительные данные.
+            {hasReplaceableRows
+              ? null
+              : ' Отметьте «Заменить» у нужных строк в таблице.'}
+          </p>
+        ) : null}
       </section>
 
       <p className="disclaimer" role="note">

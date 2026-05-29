@@ -554,14 +554,47 @@ function isBankValuePassportNoise(value: string): boolean {
 
 /** Строка содержит банковские реквизиты / метки (в т.ч. уже замаскированные плейсхолдеры) */
 function hasBankingContextInLine(line: string): boolean {
-  return /(?:(?<![\p{L}\p{N}_])БИК(?![\p{L}\p{N}_])|\[БИК_\d+\]|(?<![\p{L}\p{N}_])бик(?![\p{L}\p{N}_])|р\s*\/\s*с|р\.с\.|\[РАСЧЕТНЫЙ_СЧЕТ_\d+\]|расч(?:ёт|ет)ный\s+сч|к\s*\/\s*с|к\.с\.|\[КОРР_СЧЕТ_\d+\]|корр(?:\.|\/)?\s*с|наименование\s+банка|банк\s+получателя|(?<![\p{L}\p{N}_])банк(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])филиал(?![\p{L}\p{N}_]))/iu.test(
+  return /(?:(?<![\p{L}\p{N}_])БИК(?![\p{L}\p{N}_])|\[БИК_\d+\]|(?<![\p{L}\p{N}_])бик(?![\p{L}\p{N}_])|р\s*\/\s*с|р\.с\.|\[РАСЧЕТНЫЙ_СЧЕТ_\d+\]|расч(?:ёт|ет)ный\s+сч|к\s*\/\s*с|к\.с\.|\[КОРР_СЧЕТ_\d+\]|корр(?:\.|\/)?\s*с|наименование\s+банка|банк\s+получателя|(?<![\p{L}\p{N}_])банк(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])филиал(?:е)?(?![\p{L}\p{N}_]))/iu.test(
     line,
   )
 }
 
-/** Рядом с банковскими реквизитами / названием банка */
-function lineHasBankKeyword(line: string): boolean {
-  return hasBankingContextInLine(line)
+/** «в Московском филиале» / «Московский филиал» непосредственно перед названием банка */
+function expandBankInstitutionRange(
+  text: string,
+  start: number,
+  end: number,
+): { start: number; end: number; value: string } {
+  let s = start
+  const lineStart = text.lastIndexOf('\n', s - 1) + 1
+  const beforeOnLine = text.slice(lineStart, s)
+
+  const inlineInFilial = beforeOnLine.match(
+    /(?:^|[\s,;(])(в\s+(?:[А-ЯЁ][а-яёA-ZА-ЯЁа-яё\-]+\s+){1,4}филиале)\s*$/iu,
+  )
+  if (inlineInFilial) {
+    s = lineStart + beforeOnLine.lastIndexOf(inlineInFilial[1]!)
+  } else {
+    const filialOnLine = beforeOnLine.match(
+      /(?:^|[\s,;(])([А-ЯЁ][а-яёA-ZА-ЯЁа-яё\-]+(?:\s+[А-ЯЁ][а-яёA-ZА-ЯЁа-яё\-]+){0,3}\s+филиал(?:\s+банка)?)\s*$/iu,
+    )
+    if (filialOnLine && !/^в\s+/iu.test(filialOnLine[1]!)) {
+      s = lineStart + beforeOnLine.lastIndexOf(filialOnLine[1]!)
+    } else if (lineStart > 0) {
+      const prevLineEnd = lineStart - 1
+      const prevLineStart = text.lastIndexOf('\n', prevLineEnd - 1) + 1
+      const prevLine = text.slice(prevLineStart, prevLineEnd).trim()
+      if (
+        /^(?:в\s+(?:[А-ЯЁ][а-яёA-ZА-ЯЁа-яё\-]+\s+){1,4}филиале)\s*\.?$/iu.test(prevLine) &&
+        !isPassportOrPoliceContext(prevLine)
+      ) {
+        s = prevLineStart
+      }
+    }
+  }
+
+  const value = text.slice(s, end).replace(/\r\n/g, '\n').trimEnd()
+  return { start: s, end: s + value.length, value }
 }
 
 function mapBankInstitutionMatch(
@@ -577,12 +610,13 @@ function mapBankInstitutionMatch(
   const r = trimMatchRange(m[0], m.index!)
   if (!r) return null
   if (isBankValuePassportNoise(r.value)) return null
-  const value = r.value.replace(/[\s,;]+$/u, '').trimEnd()
-  if (value.length < 4) return null
+  const expanded = expandBankInstitutionRange(text, r.start, r.end)
+  if (isBankValuePassportNoise(expanded.value)) return null
+  if (expanded.value.length < 4) return null
   return {
-    start: r.start,
-    end: r.start + value.length,
-    value,
+    start: expanded.start,
+    end: expanded.end,
+    value: expanded.value,
     categoryId: 'bank' as const,
     placeholderTag: 'БАНК' as const,
     typeLabel,
@@ -2066,31 +2100,6 @@ export function findSensitiveEntities(
         text,
         /(?<![\p{L}\p{N}_])АО\s+Альфа[\-\s]?Банк[^\n]{0,80}/giu,
         (m) => mapBankInstitutionMatch(text, m),
-      ),
-    )
-    raw.push(
-      ...collectRegexMatches(
-        text,
-        /(?:филиал|отделение)\s+[«"]?[А-ЯЁA-Z][^«»\n]{2,60}[»"]?/giu,
-        (m) => {
-          const lineStart = text.lastIndexOf('\n', m.index! - 1) + 1
-          const lineEndIdx = text.indexOf('\n', m.index!)
-          const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
-          if (isPassportOrPoliceContext(line)) return null
-          if (!lineHasBankKeyword(line)) return null
-          const r = trimMatchRange(m[0], m.index!)
-          if (!r) return null
-          if (isBankValuePassportNoise(r.value)) return null
-          return {
-            start: r.start,
-            end: r.end,
-            value: r.value,
-            categoryId: 'bank' as const,
-            placeholderTag: 'БАНК' as const,
-            typeLabel: 'Банк / филиал',
-            priority: 48,
-          }
-        },
       ),
     )
   }

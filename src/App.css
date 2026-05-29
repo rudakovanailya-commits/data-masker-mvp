@@ -389,6 +389,13 @@
   color: var(--text);
 }
 
+.replacement-map-warning {
+  margin: 0.65rem 0 0;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
 .disclaimer {
   font-size: 0.875rem;
   line-height: 1.5;
