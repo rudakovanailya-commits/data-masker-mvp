@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
+import { UsageGuideModal } from './UsageGuideModal'
 import {
   applyMasking,
   CATEGORY_OPTIONS,
@@ -45,6 +46,7 @@ export default function App() {
   const [rows, setRows] = useState<Row[]>([])
   const [resultText, setResultText] = useState('')
   const [copyHint, setCopyHint] = useState<string | null>(null)
+  const [usageGuideOpen, setUsageGuideOpen] = useState(false)
 
   const hasRows = rows.length > 0
   const hasReplaceableRows = rows.some((r) => r.replace)
@@ -154,12 +156,23 @@ export default function App() {
       {!isTrustedHost ? <UnofficialHostWarning /> : null}
       <div className="app">
       <header className="app__header">
-        <h1 className="app__title">Маскирование данных</h1>
+        <div className="app__header-row">
+          <h1 className="app__title">Маскирование данных</h1>
+          <button
+            type="button"
+            className="btn btn--outline app__guide-btn"
+            onClick={() => setUsageGuideOpen(true)}
+          >
+            Как пользоваться
+          </button>
+        </div>
         <p className="app__lead">
           Локальный поиск и замена реквизитов в тексте. Все вычисления выполняются
           в вашем браузере.
         </p>
       </header>
+
+      <UsageGuideModal open={usageGuideOpen} onClose={() => setUsageGuideOpen(false)} />
 
       <section className="panel">
         <label className="field-label" htmlFor="source">
@@ -266,6 +279,10 @@ export default function App() {
         <label className="field-label" htmlFor="result">
           Результат
         </label>
+        <p className="result-trial-warning" role="note">
+          Проверьте результат вручную перед передачей документа. Это пробная версия: возможны
+          пропуски и ложные срабатывания.
+        </p>
         <textarea
           id="result"
           className="textarea textarea--tall"
