@@ -241,8 +241,16 @@ export default function App() {
               Загрузить .txt / .docx
             </button>
             <p className="source-upload__note">
-              Файл читается локально в браузере и не отправляется на сервер.
+              Файл читается локально в браузере.
             </p>
+            <details className="source-upload__docx-details">
+              <summary className="source-upload__docx-summary">Ограничения .docx</summary>
+              <p className="source-upload__docx-body">
+                Для .docx извлекается основной текст документа. Колонтитулы, текстовые
+                поля, изображения и сканы могут не распознаться. Проверьте результат
+                вручную.
+              </p>
+            </details>
           </div>
         </div>
         {sourceFileHint ? (

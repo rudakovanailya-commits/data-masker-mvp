@@ -318,7 +318,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 0.35rem;
+  gap: 0.25rem;
   max-width: min(100%, 22rem);
 }
 
@@ -344,6 +344,41 @@
   line-height: 1.4;
   color: var(--text);
   opacity: 0.9;
+}
+
+.source-upload__docx-details {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text);
+  opacity: 0.72;
+}
+
+.source-upload__docx-summary {
+  cursor: pointer;
+  list-style: none;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 0.15em;
+}
+
+.source-upload__docx-summary::-webkit-details-marker {
+  display: none;
+}
+
+.source-upload__docx-summary::before {
+  content: '▸ ';
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+.source-upload__docx-details[open] .source-upload__docx-summary::before {
+  transform: rotate(90deg);
+}
+
+.source-upload__docx-body {
+  margin: 0.3rem 0 0;
+  max-width: 20rem;
 }
 
 .source-upload__hint {
