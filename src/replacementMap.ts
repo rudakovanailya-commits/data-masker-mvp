@@ -38,6 +38,11 @@ function parsePlaceholder(placeholder: string): { tag: string; index: number } {
   return { tag: m[1]!, index: Number(m[2]) }
 }
 
+/** Одна строка в файле карты замен: без переносов и лишних пробелов */
+export function normalizeMapValue(value: string): string {
+  return value.replace(/\r\n|\r|\n|\t/gu, ' ').replace(/\s+/gu, ' ').trim()
+}
+
 function comparePlaceholders(
   a: string,
   b: string,
@@ -59,7 +64,7 @@ export function buildReplacementMapText(rows: ReplacementMapRow[]): string {
   for (const row of rows) {
     if (!row.replace) continue
     if (!byPlaceholder.has(row.placeholder)) {
-      byPlaceholder.set(row.placeholder, row.original)
+      byPlaceholder.set(row.placeholder, normalizeMapValue(row.original))
     }
   }
 
