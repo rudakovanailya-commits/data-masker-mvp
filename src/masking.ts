@@ -113,56 +113,96 @@ function normalizeForKey(value: string): string {
   return value.trim().replace(/\s+/g, ' ')
 }
 
-/** Нормализация кавычек в названии организации для группировки плейсхолдера */
-function normalizeOrgNameKey(value: string): string {
-  const v = value
-    .trim()
-    .replace(/\s+/g, ' ')
-    .replace(/[""„]/g, '"')
-    .toLowerCase()
-  const ruQuoted = v.match(/«(?:[^»]+|«[^»]+)»/u)
-  if (ruQuoted) return ruQuoted[0]
-  const enQuoted = v.match(/"(?:[^"]+|"[^"]+)"/u)
-  if (enQuoted) return enQuoted[0]
-  return v
+function normalizeDigitsKey(value: string): string {
+  return value.replace(/\D/g, '')
 }
 
-/** Снятие типичных падежных окончаний с одного слова (фамилия) */
-function stemRussianSurnameToken(w: string): string {
-  let x = w.toLowerCase().replace(/ё/g, 'е')
-  if (!x) return x
-  if (/ея$/u.test(x) && x.length >= 4) return x.slice(0, -2) + 'ей'
-  const fioCaseSuffixesAsc = [
-    'а',
-    'е',
-    'ю',
-    'у',
-    'я',
-    'ой',
-    'ым',
-    'им',
-    'их',
-    'ых',
-    'ого',
-    'его',
-    'овну',
-    'евну',
-    'овны',
-    'евны',
-    'ова',
-    'ева',
-    'ина',
-    'ича',
-    'овича',
-    'евича',
-  ].sort((a, b) => a.length - b.length || a.localeCompare(b, 'ru'))
-  for (const suf of fioCaseSuffixesAsc) {
-    if (!x.endsWith(suf)) continue
-    const nextLen = x.length - suf.length
-    if (nextLen < 4) continue
-    return x.slice(0, -suf.length)
+function normalizeEmailKey(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function normalizeWebsiteKey(value: string): string {
+  let v = value.trim().toLowerCase()
+  v = v.replace(/^https?:\/\//iu, '').replace(/^www\./iu, '')
+  return v.replace(/\/+$/u, '')
+}
+
+/** Ключ ФИО для плейсхолдера: без склонений, только пробелы и инициалы */
+function normalizeFioPlaceholderKey(value: string): string {
+  return value
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/\s*\.\s*/gu, '.')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+}
+
+function stripOrgLegalFormPrefix(v: string): string {
+  return v
+    .replace(/^(?:общество\s+с\s+ограниченной\s+ответственностью)\s+/iu, '')
+    .replace(/^(?:ооо|ао|пао|зао|оао|нко|ип)\s+/iu, '')
+    .trim()
+}
+
+function normalizeOrgInnerNameToken(quoted: string): string {
+  return quoted
+    .replace(/^[«""„]+|[»""]+$/gu, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+}
+
+/** Нормализация названия организации для группировки плейсхолдера */
+function normalizeOrgNameKey(value: string): string {
+  const compact = value.trim().replace(/\s+/g, ' ')
+
+  const ruQuoted = compact.match(/«(?:[^»]+|«[^»]+)»/u)
+  if (ruQuoted) return `n:${normalizeOrgInnerNameToken(ruQuoted[0])}`
+
+  const enQuoted = compact.match(/"(?:[^"]+|"[^"]+)"/u)
+  if (enQuoted) return `n:${normalizeOrgInnerNameToken(enQuoted[0])}`
+
+  const stripped = stripOrgLegalFormPrefix(
+    compact.toLowerCase().replace(/ё/g, 'е').replace(/[«»""„]/g, ''),
+  )
+  return stripped ? `r:${stripped}` : compact.toLowerCase().replace(/ё/g, 'е')
+}
+
+function normalizeEntityKey(m: RawMatch): string {
+  switch (m.categoryId) {
+    case 'fio':
+      return normalizeFioPlaceholderKey(m.value)
+    case 'org_ip':
+      if (m.placeholderTag === 'ОРГАНИЗАЦИЯ' || m.placeholderTag === 'ИП') {
+        return normalizeOrgNameKey(m.value)
+      }
+      return normalizeForKey(m.value)
+    case 'inn':
+    case 'kpp':
+    case 'ogrn':
+    case 'bik':
+    case 'settlement_account':
+    case 'corr_account':
+      return normalizeDigitsKey(m.value)
+    case 'email':
+      return normalizeEmailKey(m.value)
+    case 'website':
+      return normalizeWebsiteKey(m.value)
+    case 'igk':
+      return normalizeIgkKey(m.value)
+    case 'vin':
+      return normalizeVinKey(m.value)
+    case 'vehicle_plate':
+      return normalizeVehiclePlateKey(m.value)
+    case 'money_amount':
+      return normalizeMoneyAmountKey(m.value)
+    case 'interest_rate':
+      return normalizeInterestRateKey(m.value)
+    case 'document_date':
+      return normalizeDocumentDateKey(m.value)
+    default:
+      return normalizeForKey(m.value)
   }
-  return x
 }
 
 function normalizeMoneyAmountKey(value: string): string {
@@ -253,91 +293,6 @@ function isLikelyShortFioSurname(w: string): boolean {
   if (FIO_PREPOSITION_WORDS.has(low)) return false
   if (/\d/.test(w)) return false
   return true
-}
-
-/** Только для ключа плейсхолдера ФИО: склеивает падежные формы; краткие «Фамилия И.О.» — отдельная ветка */
-function normalizePersonNameKey(value: string): string {
-  const collapse = value.trim().replace(/\s+/g, ' ')
-  const shortM = collapse.match(
-    /^([А-ЯЁA-Zа-яё][а-яёa-z\-]{1,30})\s+([А-ЯЁA-Zа-яё]\.)\s*([А-ЯЁA-Zа-яё]\.?)$/u,
-  )
-  if (shortM) {
-    const sur = stemRussianSurnameToken(shortM[1])
-    const i1 = shortM[2][0]!.toLowerCase()
-    const i2 = (shortM[3][0] ?? '').toLowerCase()
-    return `fio2:${sur}:${i1}${i2}`
-  }
-
-  const initLastM = collapse.match(
-    /^([А-ЯЁ])\.\s*([А-ЯЁ])\.\s*([А-ЯЁ][а-яё\-]{1,30})$/u,
-  )
-  if (initLastM) {
-    const sur = stemRussianSurnameToken(initLastM[3])
-    const i1 = initLastM[1]!.toLowerCase()
-    const i2 = initLastM[2]!.toLowerCase()
-    return `fio2:${sur}:${i1}${i2}`
-  }
-
-  const tokens = collapse
-    .split(' ')
-    .map((t) => t.replace(/^[^\p{L}0-9]+|[^\p{L}0-9]+$/gu, ''))
-    .filter(Boolean)
-
-  const basis = collapse
-    .toLowerCase()
-    .replace(/ё/g, 'е')
-    .trim()
-
-  if (tokens.length !== 3) {
-    return tokens.length > 0
-      ? tokens.join(' ').toLowerCase().replace(/ё/g, 'е')
-      : basis
-  }
-
-  const fioCaseSuffixesAsc = [
-    'а',
-    'е',
-    'ю',
-    'у',
-    'я',
-    'ой',
-    'ым',
-    'им',
-    'их',
-    'ых',
-    'ого',
-    'его',
-    'овну',
-    'евну',
-    'овны',
-    'евны',
-    'ова',
-    'ева',
-    'ина',
-    'ича',
-    'овича',
-    'евича',
-  ].sort((a, b) => a.length - b.length || a.localeCompare(b, 'ru'))
-
-  const stemOneWord = (word: string): string => {
-    let w = word.toLowerCase().replace(/ё/g, 'е')
-    if (!w) return w
-
-    if (/ея$/u.test(w) && w.length >= 4) {
-      w = w.slice(0, -2) + 'ей'
-      return w
-    }
-
-    for (const suf of fioCaseSuffixesAsc) {
-      if (!w.endsWith(suf)) continue
-      const nextLen = w.length - suf.length
-      if (nextLen < 4) continue
-      return w.slice(0, -suf.length)
-    }
-    return w
-  }
-
-  return tokens.map(stemOneWord).join(' ')
 }
 
 /** Удаляет из фрагмента ИГК пробелы, дефисы, точки, № для проверки длины и ключа */
@@ -431,7 +386,7 @@ function trimAddressCandidate(value: string): string {
     /(?:,\s*единственный\s+участник|\s+единственный\s+участник|\s*\(далее|\s+руководствуясь|\s+принял\s+следующие\s+решения|(?:^|[\s,;])Подпись\b|\n+\s*\d+\.\s|,\s*Обществ[ао]\s+с\s+ограниченной|\b1\.\s*Изменить|\b2\.\s*Зарегистрировать)/giu
 
   const bankInlineStopRe =
-    /(?:^|[\s,;(\n])(?:р\/\s*с|р\.с\.|расч(?:ёт|ет)ный\s+сч(?:ёт|ет)|расчетный\s+счет|к\/\s*с|бик|банк|инн|кпп|огрн(?:ип)?)\b/giu
+    /(?:^|[\s,;(\n])(?:р\/\s*с|р\.с\.|расч(?:ёт|ет)ный(?:\s+|\s*\n\s*)сч(?:ёт|ет)|расчетный(?:\s+|\s*\n\s*)счет|расч(?:ёт|ет)ный|расчетный|к\/\s*с|корр(?:\.|\/)?\s*с|бик|банк|инн|кпп|огрн(?:ип)?|в\s+[^\n]{0,72}?(?:банке|филиале))(?=$|[^\p{L}\p{N}_])/giu
 
   let stopAt = v.length
   let sm: RegExpExecArray | null
@@ -492,13 +447,30 @@ function isValidAddressCandidate(value: string): boolean {
 const LABELED_ADDRESS_LABEL_RE =
   /(?:Юридический\s+адрес|Почтовый\s+адрес|Адрес\s+места\s+нахождения|Адрес\s+регистрации|Место\s+нахождения|Место\s+регистрации|Место\s+жительства|зарегистрирован\s+по\s+адресу)\s*:?\s*|Адрес\s*:\s*/giu
 
+/** Строка начинается с банковского реквизита (в т.ч. «Расчётный» / «счёт:» на отдельных строках) */
+function isBankRequisiteLineStart(line: string): boolean {
+  const t = line.trim()
+  if (!t) return false
+  if (
+    /^(?:ИНН|КПП|ОГРН(?:ИП)?|БИК|Расчётный|Расчетный|Расчётный\s+счёт|Расчетный\s+счет|Р\/\s*с|р\/\s*с|к\/\s*с|Корр|корр|Банк)\b/iu.test(
+      t,
+    )
+  ) {
+    return true
+  }
+  if (/^(?:счёт|счет)\s*:/iu.test(t)) return true
+  if (/^в\s+/iu.test(t) && /(?:банке|филиале)\b/iu.test(t)) return true
+  return false
+}
+
 /** Новая строка реквизитов / следующего блока — конец многострочного адреса */
 const LABELED_ADDRESS_LINE_STOP_RE =
-  /^(?:ИНН|КПП|ОГРН(?:ИП)?|БИК|Расчётный\s+счёт|Расчетный\s+счет|Р\/\s*с|р\/\s*с|к\/\s*с|Банк|Телефон|Email|E-mail|Директор|Генеральный\s+директор|Подпись|Покупатель|Продавец|Исполнитель|Заказчик)\b/iu
+  /^(?:ИНН|КПП|ОГРН(?:ИП)?|БИК|Расчётный|Расчетный|Расчётный\s+счёт|Расчетный\s+счет|счёт\s*:|счет\s*:|Р\/\s*с|р\/\s*с|к\/\s*с|Корр|корр|Банк|Телефон|Email|E-mail|Директор|Генеральный\s+директор|Подпись|Покупатель|Продавец|Исполнитель|Заказчик)\b/iu
 
 function isLabeledAddressContinuationLine(line: string): boolean {
   const t = line.trim()
   if (!t) return false
+  if (isBankRequisiteLineStart(line)) return false
   if (LABELED_ADDRESS_LINE_STOP_RE.test(t)) return false
   if (/^в\s+адрес\b/iu.test(t)) return false
   if (/^адреса\s+и\s+реквизиты/iu.test(t)) return false
@@ -527,6 +499,7 @@ function extractLabeledAddressRange(
     const nl = text.indexOf('\n', lineStart)
     const lineEnd = nl === -1 ? text.length : nl
     const line = text.slice(lineStart, lineEnd)
+    if (isBankRequisiteLineStart(line)) break
     if (lineIdx > 0 && !isLabeledAddressContinuationLine(line)) break
     end = lineEnd
     if (nl === -1) break
@@ -567,23 +540,54 @@ function isOrgMatchOnBankLine(text: string, start: number): boolean {
 
 /** Строка с паспортным / правоохранительным контекстом — не банк */
 function isPassportOrPoliceContext(line: string): boolean {
-  return /МВД|УФМС|ОВД|полици|милици|отделение\s+полиции|отделение\s+милиции|паспорт|выдан|серия|№\s*подр|подр\.|подразделения|код\s+подразделения/i.test(
+  return /МВД|УФМС|УМВД|ОВД|полици|милици|отделение\s+полиции|отделение\s+милиции|паспорт|выдан|серия|№\s*подр|подр\.|подразделения|код\s+подразделения/i.test(
     line,
   )
 }
 
 /** Значение совпадения «банк» не должно относиться к паспорту / ОВД */
 function isBankValuePassportNoise(value: string): boolean {
-  return /милици|полици|мвд|уфмс|овд|паспорт|выдан|подр\.|подразделения|серия\s*:|номер\s*\d/i.test(
+  return /милици|полици|мвд|уфмс|умвд|овд|паспорт|выдан|подр\.|подразделения|серия\s*:|номер\s*\d/i.test(
     value,
+  )
+}
+
+/** Строка содержит банковские реквизиты / метки (в т.ч. уже замаскированные плейсхолдеры) */
+function hasBankingContextInLine(line: string): boolean {
+  return /(?:(?<![\p{L}\p{N}_])БИК(?![\p{L}\p{N}_])|\[БИК_\d+\]|(?<![\p{L}\p{N}_])бик(?![\p{L}\p{N}_])|р\s*\/\s*с|р\.с\.|\[РАСЧЕТНЫЙ_СЧЕТ_\d+\]|расч(?:ёт|ет)ный\s+сч|к\s*\/\s*с|к\.с\.|\[КОРР_СЧЕТ_\d+\]|корр(?:\.|\/)?\s*с|наименование\s+банка|банк\s+получателя|(?<![\p{L}\p{N}_])банк(?![\p{L}\p{N}_])|(?<![\p{L}\p{N}_])филиал(?![\p{L}\p{N}_]))/iu.test(
+    line,
   )
 }
 
 /** Рядом с банковскими реквизитами / названием банка */
 function lineHasBankKeyword(line: string): boolean {
-  return /(?:^|[\s,;])(?:БИК|бик|р\s*\/\s*с|р\.с\.|к\s*\/\s*с|к\.с\.|Банк|банк|наименование\s+банка|банк\s+получателя|Сбербанк|Альфа[\-\s]?Банк|ПАО|АО|ЗАО|ОАО|НКО|ВТБ|Газпром)/i.test(
-    line,
-  )
+  return hasBankingContextInLine(line)
+}
+
+function mapBankInstitutionMatch(
+  text: string,
+  m: RegExpMatchArray,
+  typeLabel = 'Банк',
+): Omit<RawMatch, 'priority' | 'categoryId'> & { categoryId: CategoryId; priority: number } | null {
+  const lineStart = text.lastIndexOf('\n', m.index! - 1) + 1
+  const lineEndIdx = text.indexOf('\n', m.index!)
+  const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
+  if (isPassportOrPoliceContext(line)) return null
+  if (!hasBankingContextInLine(line)) return null
+  const r = trimMatchRange(m[0], m.index!)
+  if (!r) return null
+  if (isBankValuePassportNoise(r.value)) return null
+  const value = r.value.replace(/[\s,;]+$/u, '').trimEnd()
+  if (value.length < 4) return null
+  return {
+    start: r.start,
+    end: r.start + value.length,
+    value,
+    categoryId: 'bank' as const,
+    placeholderTag: 'БАНК' as const,
+    typeLabel,
+    priority: 53,
+  }
 }
 
 const FIO_BLOCKLIST = new Set(
@@ -760,25 +764,7 @@ function assignPlaceholders(matches: RawMatch[]): FoundEntity[] {
   const nextByTag = new Map<PlaceholderTag, number>()
 
   return matches.map((m) => {
-    const keyPart =
-      m.categoryId === 'fio'
-        ? normalizePersonNameKey(m.value)
-        : m.categoryId === 'igk'
-          ? normalizeIgkKey(m.value)
-          : m.categoryId === 'vin'
-            ? normalizeVinKey(m.value)
-            : m.categoryId === 'vehicle_plate'
-              ? normalizeVehiclePlateKey(m.value)
-          : m.categoryId === 'org_ip' &&
-              (m.placeholderTag === 'ОРГАНИЗАЦИЯ' || m.placeholderTag === 'ИП')
-            ? normalizeOrgNameKey(m.value)
-            : m.categoryId === 'money_amount'
-              ? normalizeMoneyAmountKey(m.value)
-              : m.categoryId === 'interest_rate'
-                ? normalizeInterestRateKey(m.value)
-                : m.categoryId === 'document_date'
-                  ? normalizeDocumentDateKey(m.value)
-                  : normalizeForKey(m.value)
+    const keyPart = normalizeEntityKey(m)
     const key = `${m.placeholderTag}::${keyPart}`
     let placeholder = keyToPlaceholder.get(key)
     if (!placeholder) {
@@ -1078,7 +1064,7 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /(?:р\s*\/\s*с|р\.с\.|расч(?:ёт|ет)ный\s+сч(?:ёт|ет)|р\/с)[\s.:—–-]{0,12}((?:\d[\s]*){19}\d)/giu,
+        /(?:р\s*\/\s*с|р\.с\.|(?:расч(?:ёт|ет)ный|расчетный)[\s\n]{0,24}сч(?:ёт|ет)|р\/с)[\s.:—–-]{0,12}((?:\d[\s]*){19}\d)/giu,
         (m) => {
           const raw = (m[1] ?? '').trim()
           const digits = raw.replace(/\s+/g, '')
@@ -2043,41 +2029,43 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /\bПАО\s+Сбербанк[^\n]{0,80}/giu,
-        (m) => {
-          const r = trimMatchRange(m[0], m.index!)
-          if (!r) return null
-          if (isBankValuePassportNoise(r.value)) return null
-          return {
-            start: r.start,
-            end: r.end,
-            value: r.value,
-            categoryId: 'bank' as const,
-            placeholderTag: 'БАНК' as const,
-            typeLabel: 'Банк',
-            priority: 50,
-          }
-        },
+        /(?<![\p{L}\p{N}_])(?:[А-ЯЁ][а-яёA-ZА-ЯЁа-яё\-]{2,24}\s+){1,4}филиал(?:\s+банка)?\s+(?:ПАО|АО|ЗАО|ОАО|НКО)(?:\s+(?:КБ|Банк))?\s+(?:«[^»\n]{1,80}»|"[^"\n]{1,80}")/giu,
+        (m) => mapBankInstitutionMatch(text, m, 'Банк / филиал'),
       ),
     )
     raw.push(
       ...collectRegexMatches(
         text,
-        /\bАО\s+Альфа[\-\s]?Банк[^\n]{0,80}/giu,
-        (m) => {
-          const r = trimMatchRange(m[0], m.index!)
-          if (!r) return null
-          if (isBankValuePassportNoise(r.value)) return null
-          return {
-            start: r.start,
-            end: r.end,
-            value: r.value,
-            categoryId: 'bank' as const,
-            placeholderTag: 'БАНК' as const,
-            typeLabel: 'Банк',
-            priority: 50,
-          }
-        },
+        /(?<![\p{L}\p{N}_])(?:ПАО|АО|ЗАО|ОАО|НКО)(?:\s+(?:КБ|Банк))?\s+(?:«[^»\n]{1,80}»|"[^"\n]{1,80}")/giu,
+        (m) => mapBankInstitutionMatch(text, m),
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?<![\p{L}\p{N}_])(?:ПАО|АО|ЗАО|ОАО|НКО)\s+(?:Банк\s+)?[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z\-]{2,48}(?=\s*(?:БИК|бик|\[БИК_|\[КОРР_СЧЕТ_|,|\)|$))/giu,
+        (m) => mapBankInstitutionMatch(text, m),
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?<![\p{L}\p{N}_])Банк\s+(?:ВТБ|Газпром(?:банк)?|Сбербанк|Т-?Банк|ТБанк|[А-ЯЁA-Z][А-ЯЁа-яёA-Za-z\-]{2,40})(?=\s*(?:БИК|бик|,|\)|$|\[БИК_))/giu,
+        (m) => mapBankInstitutionMatch(text, m),
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?<![\p{L}\p{N}_])ПАО\s+Сбербанк(?=\s*(?:БИК|бик|,|\)|$|\[БИК_))/giu,
+        (m) => mapBankInstitutionMatch(text, m),
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?<![\p{L}\p{N}_])АО\s+Альфа[\-\s]?Банк[^\n]{0,80}/giu,
+        (m) => mapBankInstitutionMatch(text, m),
       ),
     )
     raw.push(

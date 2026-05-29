@@ -1,3 +1,87 @@
+.trust-banner {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.65rem clamp(1rem, 3vw, 2rem);
+  background: #eef2ff;
+  border-bottom: 1px solid #c7d2fe;
+  color: #1e1b4b;
+}
+
+.trust-banner__text {
+  margin: 0;
+  max-width: 72rem;
+  margin-inline: auto;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.trust-banner__link {
+  color: #3730a3;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.trust-banner__link:hover {
+  text-decoration: underline;
+}
+
+.trust-warning {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 1rem clamp(1rem, 3vw, 2rem);
+  background: #fef3c7;
+  border-bottom: 2px solid #f59e0b;
+  color: #78350f;
+}
+
+.trust-warning__title {
+  margin: 0 auto 0.5rem;
+  max-width: 72rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.trust-warning__text {
+  margin: 0 auto;
+  max-width: 72rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.trust-warning__link {
+  color: #92400e;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.trust-warning__link:hover {
+  text-decoration: underline;
+}
+
+@media (prefers-color-scheme: dark) {
+  .trust-banner {
+    background: #1e1b4b;
+    border-bottom-color: #4338ca;
+    color: #e0e7ff;
+  }
+
+  .trust-banner__link {
+    color: #c7d2fe;
+  }
+
+  .trust-warning {
+    background: #422006;
+    border-bottom-color: #d97706;
+    color: #fef3c7;
+  }
+
+  .trust-warning__link {
+    color: #fde68a;
+  }
+}
+
 .app {
   /* Кнопки: токены hover/disabled (светлая тема по умолчанию) */
   --btn-primary-hover-bg: #6d28d9;
@@ -368,6 +452,66 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
   border-radius: 2px;
+}
+
+.legal-details {
+  margin-top: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--input-bg);
+}
+
+.legal-details__summary {
+  padding: 0.65rem 0.85rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-h);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.legal-details__summary::-webkit-details-marker {
+  display: none;
+}
+
+.legal-details__summary::before {
+  content: '▸ ';
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+.legal-details[open] .legal-details__summary::before {
+  transform: rotate(90deg);
+}
+
+.legal-details__body {
+  padding: 0 0.85rem 0.85rem;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.legal-details__body p {
+  margin: 0 0 0.65rem;
+}
+
+.legal-details__body ul {
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.legal-details__body li + li {
+  margin-top: 0.45rem;
+}
+
+.legal-details__body a {
+  color: var(--text-h);
+  font-weight: 500;
+}
+
+.legal-details__body a:hover {
+  color: var(--accent);
 }
 
 @media (max-width: 640px) {

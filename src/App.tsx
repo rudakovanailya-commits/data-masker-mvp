@@ -6,6 +6,8 @@ import {
   type CategoryId,
   type FoundEntity,
 } from './masking'
+import { OfficialBanner, TrustFooter, UnofficialHostWarning } from './TrustChrome'
+import { isAllowedHostname } from './trustConfig'
 
 type Row = FoundEntity & { replace: boolean }
 
@@ -15,12 +17,16 @@ const REQUIRED_VEHICLE_CATEGORIES: { id: CategoryId; label: string }[] = [
   { id: 'pts', label: 'ПТС / ЭПТС' },
 ]
 
+const REQUIRED_EXTRA_CATEGORIES: { id: CategoryId; label: string }[] = [
+  { id: 'website', label: 'Сайт / домен' },
+]
+
 function ensureCategoryOptions(
   base: ReadonlyArray<{ id: CategoryId; label: string }>,
 ): { id: CategoryId; label: string }[] {
   const out = [...base]
   const known = new Set(out.map((c) => c.id))
-  for (const c of REQUIRED_VEHICLE_CATEGORIES) {
+  for (const c of [...REQUIRED_VEHICLE_CATEGORIES, ...REQUIRED_EXTRA_CATEGORIES]) {
     if (!known.has(c.id)) out.push(c)
   }
   return out
@@ -129,8 +135,17 @@ export default function App() {
     [],
   )
 
+  const isTrustedHost = useMemo(
+    () =>
+      typeof window !== 'undefined' ? isAllowedHostname(window.location.hostname) : true,
+    [],
+  )
+
   return (
-    <div className="app">
+    <>
+      <OfficialBanner />
+      {!isTrustedHost ? <UnofficialHostWarning /> : null}
+      <div className="app">
       <header className="app__header">
         <h1 className="app__title">Маскирование данных</h1>
         <p className="app__lead">
@@ -281,29 +296,8 @@ export default function App() {
         чувствительные данные, но не гарантирует полную юридическую анонимизацию.
       </p>
 
-      <footer className="app-footer">
-        <div className="app-footer__inner">
-          <p className="app-footer__line">© 2026. Все права защищены.</p>
-          <p className="app-footer__line">
-            Данные обрабатываются локально в браузере и не отправляются на сервер.
-          </p>
-          <p className="app-footer__line">
-            Сервис помогает маскировать чувствительные данные, но не гарантирует полную
-            юридическую анонимизацию.
-          </p>
-          <p className="app-footer__links">
-            <a className="app-footer__link" href="#privacy">
-              Политика конфиденциальности
-            </a>
-            <span className="app-footer__sep" aria-hidden="true">
-              ·
-            </span>
-            <a className="app-footer__link" href="#terms">
-              Пользовательское соглашение
-            </a>
-          </p>
-        </div>
-      </footer>
+      <TrustFooter />
     </div>
+    </>
   )
 }
