@@ -17,6 +17,7 @@ export type CategoryId =
   | 'cadastre'
   | 'premises'
   | 'email'
+  | 'website'
   | 'phone'
   | 'fio'
   | 'passport'
@@ -44,6 +45,7 @@ export type PlaceholderTag =
   | 'КАДАСТРОВЫЙ_НОМЕР'
   | 'ПОМЕЩЕНИЕ'
   | 'EMAIL'
+  | 'САЙТ'
   | 'ТЕЛЕФОН'
   | 'ФИО'
   | 'ПАСПОРТНЫЕ_ДАННЫЕ'
@@ -93,6 +95,7 @@ export const CATEGORY_OPTIONS: {
   { id: 'cadastre', label: 'Кадастровый номер' },
   { id: 'premises', label: 'Помещение / офис / квартира' },
   { id: 'email', label: 'Email' },
+  { id: 'website', label: 'Сайт / домен' },
   { id: 'phone', label: 'Телефон' },
 ]
 
@@ -245,7 +248,9 @@ function isContractClauseRef(ref: string): boolean {
 
 function isLikelyShortFioSurname(w: string): boolean {
   if (w.length < 2 || w.length > 32) return false
-  if (FIO_BLOCKLIST.has(w.toLowerCase())) return false
+  const low = w.toLowerCase()
+  if (FIO_BLOCKLIST.has(low)) return false
+  if (FIO_PREPOSITION_WORDS.has(low)) return false
   if (/\d/.test(w)) return false
   return true
 }
@@ -425,17 +430,23 @@ function trimAddressCandidate(value: string): string {
   const stopRe =
     /(?:,\s*единственный\s+участник|\s+единственный\s+участник|\s*\(далее|\s+руководствуясь|\s+принял\s+следующие\s+решения|(?:^|[\s,;])Подпись\b|\n+\s*\d+\.\s|,\s*Обществ[ао]\s+с\s+ограниченной|\b1\.\s*Изменить|\b2\.\s*Зарегистрировать)/giu
 
+  const bankInlineStopRe =
+    /(?:^|[\s,;(\n])(?:р\/\s*с|р\.с\.|расч(?:ёт|ет)ный\s+сч(?:ёт|ет)|расчетный\s+счет|к\/\s*с|бик|банк|инн|кпп|огрн(?:ип)?)\b/giu
+
   let stopAt = v.length
-  stopRe.lastIndex = 0
   let sm: RegExpExecArray | null
-  while ((sm = stopRe.exec(v)) !== null) {
-    if (sm.index >= 0 && sm.index < stopAt) stopAt = sm.index
+  for (const re of [stopRe, bankInlineStopRe]) {
+    re.lastIndex = 0
+    while ((sm = re.exec(v)) !== null) {
+      const at = sm.index + (sm[0].length - sm[0].trimStart().length)
+      if (at >= 0 && at < stopAt) stopAt = at
+    }
   }
 
   const head = v.slice(0, stopAt)
 
   const unitRe =
-    /(?:кв\.|квартира|помещение|оф\.|офис|пом\.)\s*(?:№\s*)?[\d\-/]+|(?:этаж|Этаж)\s*[\d\-/]+/giu
+    /(?:кв\.|квартира|помещение|помещ\.|оф\.|офис|пом\.)\s*(?:№\s*)?[\d\-/]+|(?:литера|лит\.)\s*[А-ЯЁA-Z\d]+|(?:этаж|Этаж)\s*[\d\-/]+/giu
   let unitEnd = -1
   unitRe.lastIndex = 0
   while ((sm = unitRe.exec(head)) !== null) {
@@ -483,7 +494,7 @@ const LABELED_ADDRESS_LABEL_RE =
 
 /** Новая строка реквизитов / следующего блока — конец многострочного адреса */
 const LABELED_ADDRESS_LINE_STOP_RE =
-  /^(?:ИНН|КПП|ОГРН(?:ИП)?|БИК|Расчётный\s+счёт|р\/\s*с|к\/\s*с|Банк|Телефон|Email|E-mail|Директор|Генеральный\s+директор|Подпись|Покупатель|Продавец|Исполнитель|Заказчик)\b/iu
+  /^(?:ИНН|КПП|ОГРН(?:ИП)?|БИК|Расчётный\s+счёт|Расчетный\s+счет|Р\/\s*с|р\/\s*с|к\/\s*с|Банк|Телефон|Email|E-mail|Директор|Генеральный\s+директор|Подпись|Покупатель|Продавец|Исполнитель|Заказчик)\b/iu
 
 function isLabeledAddressContinuationLine(line: string): boolean {
   const t = line.trim()
@@ -636,8 +647,81 @@ const FIO_BLOCKLIST = new Set(
     'генеральный',
     'главный',
     'бухгалтер',
+    'приложение',
+    'договору',
+    'договор',
+    'контракту',
+    'форма',
+    'таблица',
+    'сентября',
+    'января',
+    'февраля',
+    'марта',
+    'апреля',
+    'мая',
+    'июня',
+    'июля',
+    'августа',
+    'октября',
+    'ноября',
+    'декабря',
   ].map((w) => w.toLowerCase()),
 )
+
+const FIO_PREPOSITION_WORDS = new Set(
+  ['к', 'в', 'с', 'у', 'о', 'и', 'а', 'я', 'от', 'до', 'по', 'на', 'за', 'из', 'при', 'для'].map(
+    (w) => w.toLowerCase(),
+  ),
+)
+
+/** Строка «Приложение №…» / «ФОРМА №…» / «Таблица №…» — не искать в ней ФИО */
+function isFioOnAppendixFormLine(text: string, pos: number): boolean {
+  const lineStart = text.lastIndexOf('\n', pos - 1) + 1
+  const lineEnd = text.indexOf('\n', pos)
+  const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trimStart()
+  return /^(?:приложение|форма|таблица|форм[аы])\b/iu.test(line)
+}
+
+/** Не считать ФИО фрагмент перед №1 / N1 / «к Договору» (контекст приложения) */
+function isFalseFioNearAppendixNumber(text: string, start: number, end: number): boolean {
+  const matched = text.slice(start, end).trim()
+  const tail = text.slice(end, end + 48)
+
+  const appendixAfter =
+    /^\s*(?:№|\u2116|N\s*o\.?|N)\s*\d/i.test(tail) || /^\s+к\s+договору\b/iu.test(tail)
+
+  if (!appendixAfter) return false
+
+  if (isFioOnAppendixFormLine(text, start)) return true
+
+  if (/^(?:приложение|форма|таблица|форм[аы])$/iu.test(matched)) return true
+
+  for (const w of matched.split(/\s+/)) {
+    if (FIO_BLOCKLIST.has(w.toLowerCase()) || FIO_PREPOSITION_WORDS.has(w.toLowerCase())) {
+      return true
+    }
+  }
+
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1
+  const lineEnd = text.indexOf('\n', end)
+  const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd)
+  const beforeOnLine = line.slice(0, start - lineStart).trimEnd()
+  const linePrefix = (beforeOnLine + (beforeOnLine && matched ? ' ' : '') + matched).trim()
+
+  if (/^(?:приложение|форма|таблица|форм[аы])\b/iu.test(linePrefix)) return true
+  if (/(?:приложение|форма|таблица|форм[аы])\s*$/iu.test(beforeOnLine)) return true
+
+  return false
+}
+
+/** Домен не внутри email (info@iltk.ru) */
+function isDomainPartOfEmail(text: string, start: number): boolean {
+  if (start > 0 && text[start - 1] === '@') return true
+  const prev = text.slice(Math.max(0, start - 96), start)
+  const at = prev.lastIndexOf('@')
+  if (at === -1) return false
+  return !/\s/u.test(prev.slice(at + 1))
+}
 
 function isLikelyFio(words: [string, string, string]): boolean {
   for (const w of words) {
@@ -778,6 +862,38 @@ export function findSensitiveEntities(
     )
   }
 
+  if (enabled.has('website')) {
+    const domainTld = '(?:ru|com|org|net|рф)'
+    const domainLabel = '[a-zA-Z0-9а-яёА-ЯЁ](?:[a-zA-Z0-9а-яёА-ЯЁ-]{0,61}[a-zA-Z0-9а-яёА-ЯЁ])?'
+    const domainHost = `${domainLabel}(?:\\.${domainLabel})*\\.${domainTld}`
+    const websiteRes = [
+      new RegExp(`(?<![@\\w/])https?:\\/\\/(?:www\\.)?(${domainHost})(?=$|[^\\w.\\-])`, 'giu'),
+      new RegExp(`(?<![@\\w/])(?:www\\.)(${domainHost})(?=$|[^\\w.\\-])`, 'giu'),
+      new RegExp(`(?<![@\\w./])(${domainHost})(?=$|[^\\w.\\-])`, 'giu'),
+    ]
+    for (const re of websiteRes) {
+      raw.push(
+        ...collectRegexMatches(text, re, (m) => {
+          const val = m[1] ?? m[0]
+          const start = m.index! + m[0].indexOf(val)
+          if (isDomainPartOfEmail(text, start)) return null
+          const host = val.trim()
+          if (!/[a-zA-Zа-яёА-ЯЁ]/u.test(host)) return null
+          if (/^\d+(?:\.\d+)+$/u.test(host)) return null
+          return {
+            start,
+            end: start + host.length,
+            value: host,
+            categoryId: 'website' as const,
+            placeholderTag: 'САЙТ' as const,
+            typeLabel: 'Сайт / домен',
+            priority: 88,
+          }
+        }),
+      )
+    }
+  }
+
   if (enabled.has('phone')) {
     const phoneRes = [
       /\+7[\s\-–]?(?:\(\s*\d{3}\s*\)|\d{3})[\s\-–]?\d{3}[\s\-–]?\d{2}[\s\-–]?\d{2}\b/g,
@@ -904,7 +1020,7 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /(?:^|[^\p{L}\p{N}_])ИНН\s*\/\s*КПП\s*(?:\d{10,12}|\[ИНН_\d+\])\s*\/\s*(\d{9})(?=$|[^\p{L}\p{N}_])/giu,
+        /(?:^|[^\p{L}\p{N}_])ИНН\s*\/\s*КПП\s*:?\s*(?:\d{10,12}|\[\s*ИНН_\d+\s*\])\s*\/\s*(\d{9})(?=$|[^\p{L}\p{N}_])/giu,
         (m) => {
           const val = m[1] ?? ''
           if (!val) return null
@@ -962,14 +1078,16 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /(?:р\s*\/\s*с|р\.с\.|расч(?:ёт|ет)ный\s+сч(?:ёт|ет)|р\/с)[\s.:—–-]{0,12}(\d{20})\b/giu,
+        /(?:р\s*\/\s*с|р\.с\.|расч(?:ёт|ет)ный\s+сч(?:ёт|ет)|р\/с)[\s.:—–-]{0,12}((?:\d[\s]*){19}\d)/giu,
         (m) => {
-          const val = m[1] ?? m[0]
-          const start = m.index! + m[0].indexOf(val)
+          const raw = (m[1] ?? '').trim()
+          const digits = raw.replace(/\s+/g, '')
+          if (digits.length !== 20) return null
+          const start = m.index! + m[0].indexOf(m[1] ?? raw)
           return {
             start,
-            end: start + val.length,
-            value: val,
+            end: start + raw.length,
+            value: raw,
             categoryId: 'settlement_account' as const,
             placeholderTag: 'РАСЧЕТНЫЙ_СЧЕТ' as const,
             typeLabel: 'Расчётный счёт',
@@ -1109,7 +1227,7 @@ export function findSensitiveEntities(
 
   if (enabled.has('fio')) {
     const fioRe =
-      /(?:^|[\s,.:;()_\-])(?!Обществ)([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ][а-яё]{1,24})\s+((?:[А-ЯЁ][а-яё]*(?:ович|евич|вна|ична|ича|оглы|кызы|ич)(?:[аеиоуыья])?)|(?:[А-ЯЁ][а-яё]{7,}))(?=[\s,.:;()\]_\-]|$)/gu
+      /(?:^|[\s,.:;()_\-])(?!Обществ|Приложение|ПРИЛОЖЕНИЕ|Форма|ФОРМА|Таблица|ТАБЛИЦА)([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ][а-яё]{1,24})\s+((?:[А-ЯЁ][а-яё]*(?:ович|евич|вна|ична|ича|оглы|кызы|ич)(?:[аеиоуыья])?)|(?:[А-ЯЁ][а-яё]{7,}))(?=[\s,.:;()\]_\-]|$)/gu
     raw.push(
       ...collectRegexMatches(text, fioRe, (m) => {
         const w1 = m[1] ?? ''
@@ -1119,6 +1237,7 @@ export function findSensitiveEntities(
         const inner = `${w1} ${w2} ${w3}`
         const start = m.index! + m[0].indexOf(w1)
         const end = start + inner.length
+        if (isFioOnAppendixFormLine(text, start)) return null
         const lineStart = text.lastIndexOf('\n', start - 1) + 1
         const lineEndIdx = text.indexOf('\n', start)
         const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
@@ -1129,6 +1248,7 @@ export function findSensitiveEntities(
         const beforeInLine = line.slice(0, posInLine)
         if (/милици|полици|мвд|уфмс|овд|выдан|подразделения|№\s*подр|подр\./i.test(beforeInLine))
           return null
+        if (isFalseFioNearAppendixNumber(text, start, end)) return null
         return {
           start,
           end,
@@ -1151,6 +1271,7 @@ export function findSensitiveEntities(
           const inner = `${w1} ${w2}`
           const start = m.index! + m[0].indexOf(w1)
           const end = start + inner.length
+          if (isFioOnAppendixFormLine(text, start)) return null
           const lineStart = text.lastIndexOf('\n', start - 1) + 1
           const lineEndIdx = text.indexOf('\n', start)
           const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
@@ -1161,6 +1282,7 @@ export function findSensitiveEntities(
           const beforeInLine = line.slice(0, posInLine)
           if (/милици|полици|мвд|уфмс|овд|выдан|подразделения|№\s*подр|подр\./i.test(beforeInLine))
             return null
+          if (isFalseFioNearAppendixNumber(text, start, end)) return null
           return {
             start,
             end,
@@ -1188,6 +1310,8 @@ export function findSensitiveEntities(
           const start = m.index! + m[0].indexOf(rawVal)
           const r = trimMatchRange(rawVal, start)
           if (!r) return null
+          if (isFioOnAppendixFormLine(text, r.start)) return null
+          if (isFalseFioNearAppendixNumber(text, r.start, r.end)) return null
 
           return {
             start: r.start,
@@ -1606,7 +1730,7 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /\b(?:\d{1,3}(?:\s+\d{3})+|\d{5,})(?:,\s*\d{2})?(?!\s*%)(?:\s*\([^)\n]{3,360}\))?\s*(?:руб\.?|рубля|рублей|рубль)(?:\s+\d{2}\s*копе(?:йка|йки|ек))?(?=$|[^\p{L}\p{N}_])/giu,
+        /\b(?:\d{1,3}(?:\s+\d{3})+|\d{4,})(?:,\s*\d{2})?(?!\s*%)(?:\s*\([^)\n]{3,360}\))?\s*(?:руб\.?|рубля|рублей|рубль)(?:\s+\d{2}\s*копе(?:йка|йки|ек))?(?=$|[^\p{L}\p{N}_])/giu,
         (m) => {
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
