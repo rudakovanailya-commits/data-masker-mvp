@@ -442,6 +442,29 @@ function trimAddressCandidate(value: string): string {
   out = out.replace(/[,\s;.\u00A0]+$/u, '').trimEnd()
   return out
 }
+
+/** Обрезка адреса без метки: стоп-фразы и реквизиты, но не отрезать город/индекс после помещения */
+function trimUnlabeledAddressCandidate(value: string): string {
+  let v = value.replace(/\r\n/g, '\n').trimEnd()
+  if (!v) return v
+
+  const bankInlineStopRe =
+    /(?:^|[\s,;(\n])(?:р\/\s*с|р\.с\.|расч(?:ёт|ет)ный(?:\s+|\s*\n\s*)сч(?:ёт|ет)|расчетный(?:\s+|\s*\n\s*)счет|расч(?:ёт|ет)ный|расчетный|к\/\s*с|корр(?:\.|\/)?\s*с|бик|банк|инн|кпп|огрн(?:ип)?)(?=$|[^\p{L}\p{N}_])/giu
+
+  let stopAt = v.length
+  let sm: RegExpExecArray | null
+  bankInlineStopRe.lastIndex = 0
+  while ((sm = bankInlineStopRe.exec(v)) !== null) {
+    const at = sm.index + (sm[0].length - sm[0].trimStart().length)
+    if (at >= 0 && at < stopAt) stopAt = at
+  }
+
+  return v
+    .slice(0, stopAt)
+    .replace(/[,\s;.\u00A0]+$/u, '')
+    .trimEnd()
+}
+
 function isValidAddressCandidate(value: string): boolean {
   const v = value.toLowerCase()
 
@@ -462,7 +485,7 @@ function isValidAddressCandidate(value: string): boolean {
   // у настоящего адреса должны быть признаки адреса
   const hasAddressMarkers =
     /\b\d{6}\b/u.test(v) ||
-    /\b(?:г\.|город|ул\.|улица|наб\.|набережная|пр\.|проспект|д\.|дом|корп\.|к\.|кв\.|оф\.|офис|пом\.|помещение|лит\.|литера|а\/я|обл\.|область|санкт-петербург|москва)\b/iu.test(
+    /\b(?:г\.|город|ул\.|улица|наб\.|набережная|проспект|пр\.|пр-кт|д\.|дом|корп\.|к\.|кв\.|оф\.|офис|пом\.|помещение|лит\.|литера|а\/я|обл\.|область|санкт[\s-]?петербург|санктпетербург|москва)\b/iu.test(
       v,
     )
 
@@ -501,7 +524,121 @@ const LABELED_ADDRESS_LINE_STOP_RE =
   /^(?:ИНН|КПП|ОГРН(?:ИП)?|БИК|Расчётный|Расчетный|Расчётный\s+счёт|Расчетный\s+счет|счёт\s*:|счет\s*:|Р\/\s*с|р\/\s*с|к\/\s*с|Корр|корр|Банк|Телефон|Email|E-mail|Директор|Генеральный\s+директор|Подпись|Покупатель|Продавец|Исполнитель|Заказчик)\b/iu
 
 const ADDRESS_CONTINUATION_MARKERS_RE =
-  /(?:\d{6}|г\.|город|ул\.|улица|наб\.|набережная|пр\.|пр-кт|просп\.?|проспект|пер\.|переулок|б-р|бульвар|ш\.|шоссе|д\.|дом|лит\.|литера|пом\.|помещение|офис|кв\.|квартира|а\/я|российская|республика|респ\.|санкт|петербург|москва|обл\.|область|край)/iu
+  /(?:\d{6}|г\.|город|ул\.|улица|наб\.|набережная|проспект|пр\.|пр-кт|просп\.?|пер\.|переулок|б-р|бульвар|ш\.|шоссе|д\.|дом|лит\.|литера|литер|пом\.|помещение|офис|кв\.|квартира|а\/я|российская|республика|респ\.|санкт|петербург|санктпетербург|москва|обл\.|область|край)/iu
+
+/** Улица/набережная в шапке без метки «Адрес:» */
+const UNLABELED_ADDR_STREET_RE =
+  /(?:НАБЕРЕЖНАЯ|НАБ\.|УЛИЦА|УЛ\.|ПРОСПЕКТ|ПРОСП\.|ПР\.|ПР-КТ|ПЕРЕУЛОК|ПЕР\.|ШОССЕ|Ш\.|БУЛЬВАР|Б-Р|набережная|наб\.|улица|ул\.|проспект|пр\.|пр-кт)/iu
+
+function isUnlabeledAddressAnchorLine(line: string): boolean {
+  const t = line.trim()
+  if (t.length < 12 || t.length > 200) return false
+  if (isBankRequisiteLineStart(t) || LABELED_ADDRESS_LINE_STOP_RE.test(t)) return false
+  if (/^(?:ДОГОВОР|СОГЛАШЕНИЕ|КОНТРАКТ|ПРИЛОЖЕНИЕ|ФОРМА|ТАБЛИЦА|ПРОТОКОЛ)\b/iu.test(t)) return false
+  if (/адрес\s*:/iu.test(t)) return false
+  if (!UNLABELED_ADDR_STREET_RE.test(t)) return false
+  if (!/\d/u.test(t)) return false
+  return true
+}
+
+function isUnlabeledAddressContinuationLine(line: string): boolean {
+  const t = normalizeAddressLineRaw(line).trim()
+  if (!t) return false
+  if (isBankRequisiteLineStart(t) || LABELED_ADDRESS_LINE_STOP_RE.test(t)) return false
+  return (
+    ADDRESS_CONTINUATION_MARKERS_RE.test(t) ||
+    /\b(?:литер|лит\.|литера)\b/iu.test(t) ||
+    /^[А-ЯЁA-Z0-9][А-ЯЁA-Z0-9\s.,\-]{2,120}$/u.test(t)
+  )
+}
+
+function scoreUnlabeledAddressBlock(block: string): number {
+  const v = block.toLowerCase().replace(/\s+/g, ' ')
+  let score = 0
+  if (UNLABELED_ADDR_STREET_RE.test(block)) score++
+  if (/\b\d{6}\b/u.test(v)) score++
+  if (/(?:санкт[\s-]?петербург|санктпетербург|москва|\bг\.|,?\s*г\s*,)/iu.test(v)) score++
+  if (/(?:литер|лит\.|литера|помещение|пом\.|квартира|кв\.)/iu.test(v)) score++
+  if (/,\s*\d{1,4}\b|(?:^|[\s,])\d{1,4}\s*,/u.test(v)) score++
+  return score
+}
+
+function isValidUnlabeledAddressBlock(block: string): boolean {
+  if (block.length < 20 || block.length > 320) return false
+  if (/^(?:адреса\s+и\s+реквизиты|договор)\b/iu.test(block.trim())) return false
+  if (/(?:^|\n)\s*(?:ИНН|КПП|ОГРН|Р\/\s*с|БИК)\b/im.test(block)) return false
+  return scoreUnlabeledAddressBlock(block) >= 3
+}
+
+function extractUnlabeledAddressRange(
+  text: string,
+  lineStart: number,
+): { start: number; end: number; value: string } | null {
+  const maxLines = 4
+  const maxSpan = 280
+  let cur = lineStart
+  let lineIdx = 0
+  let blockEnd = lineStart
+
+  while (lineIdx < maxLines && blockEnd - lineStart < maxSpan) {
+    const nl = text.indexOf('\n', cur)
+    const lineEnd = nl === -1 ? text.length : nl
+    const line = normalizeAddressLineRaw(text.slice(cur, lineEnd))
+    const inlineStop = addressLineEndBeforeInlineBank(line)
+    const effective = line.slice(0, inlineStop).trimEnd()
+
+    if (!effective) {
+      if (lineIdx === 0) return null
+      break
+    }
+
+    if (lineIdx === 0 && !isUnlabeledAddressAnchorLine(effective)) return null
+    if (lineIdx > 0 && !isUnlabeledAddressContinuationLine(effective)) break
+
+    blockEnd = cur + inlineStop
+    lineIdx++
+
+    if (nl === -1 || inlineStop < line.length) break
+    cur = nl + 1
+  }
+
+  const rawValue = text.slice(lineStart, blockEnd).replace(/\r\n/g, '\n').trimEnd()
+  if (!rawValue) return null
+  return { start: lineStart, end: lineStart + rawValue.length, value: rawValue }
+}
+
+function collectUnlabeledHeaderAddresses(text: string): RawMatch[] {
+  const out: RawMatch[] = []
+  let offset = 0
+  let nl = text.indexOf('\n')
+  if (nl === -1) nl = text.length
+
+  while (offset < text.length) {
+    const lineEnd = nl === -1 ? text.length : nl
+    const line = text.slice(offset, lineEnd)
+    if (isUnlabeledAddressAnchorLine(line)) {
+      const block = extractUnlabeledAddressRange(text, offset)
+      if (block) {
+        const trimmed = trimUnlabeledAddressCandidate(block.value)
+        if (trimmed.length >= 20 && isValidUnlabeledAddressBlock(trimmed)) {
+          out.push({
+            start: block.start,
+            end: block.start + trimmed.length,
+            value: trimmed,
+            categoryId: 'address',
+            placeholderTag: 'АДРЕС',
+            typeLabel: 'Адрес (без метки)',
+            priority: 43,
+          })
+        }
+      }
+    }
+    offset = lineEnd + 1
+    nl = text.indexOf('\n', offset)
+  }
+
+  return out
+}
 
 function normalizeAddressLineRaw(line: string): string {
   return line.replace(/\r/g, '').replace(/\u00a0/g, ' ')
@@ -625,6 +762,16 @@ function isPremisesInsideLabeledAddress(text: string, start: number, end: number
   )
 }
 
+/** Заголовок договора / формы — не название организации */
+function isOrgInContractTitleContext(text: string, start: number, value: string): boolean {
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1
+  const lineEndIdx = text.indexOf('\n', start)
+  const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx).trim()
+  if (/^(?:ДОГОВОР|СОГЛАШЕНИЕ|КОНТРАКТ|ПРОТОКОЛ|ПРИЛОЖЕНИЕ|ФОРМА|ТАБЛИЦА)\b/iu.test(line)) return true
+  if (!/[«""]/.test(value) && !/\b(?:ооо|ао|пао|ип)\b/iu.test(value)) return true
+  return false
+}
+
 /** Не считать «ООО/ПАО …» названием организации в строке «Банк: …» */
 function isOrgMatchOnBankLine(text: string, start: number): boolean {
   const lineStart = text.lastIndexOf('\n', start - 1) + 1
@@ -701,8 +848,15 @@ function mapBankInstitutionMatch(
   const lineStart = text.lastIndexOf('\n', m.index! - 1) + 1
   const lineEndIdx = text.indexOf('\n', m.index!)
   const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
+  const nextLineStart = lineEndIdx === -1 ? text.length : lineEndIdx + 1
+  const nextLineEnd = text.indexOf('\n', nextLineStart)
+  const nextLine =
+    lineEndIdx === -1
+      ? ''
+      : text.slice(nextLineStart, nextLineEnd === -1 ? text.length : nextLineEnd)
   if (isPassportOrPoliceContext(line)) return null
-  if (!hasBankingContextInLine(line)) return null
+  const bankContext = nextLine ? `${line}\n${nextLine}` : line
+  if (!hasBankingContextInLine(bankContext)) return null
   const r = trimMatchRange(m[0], m.index!)
   if (!r) return null
   if (isBankValuePassportNoise(r.value)) return null
@@ -1377,7 +1531,11 @@ export function findSensitiveEntities(
         text,
         new RegExp(
           '(?:Обществ[ао]|ОБЩЕСТВ[АО])\\s+с\\s+ограниченной\\s+ответственностью\\s*' +
+            '(?:' +
             orgQuotedRu +
+            '|' +
+            orgQuotedEn +
+            ')' +
             orgStopQuoted,
           'giu',
         ),
@@ -1385,6 +1543,7 @@ export function findSensitiveEntities(
           if (isOrgMatchOnBankLine(text, m.index!)) return null
           const r = trimMatchRange(m[0], m.index!)
           if (!r || r.value.length < 12) return null
+          if (isOrgInContractTitleContext(text, r.start, r.value)) return null
           return {
             start: r.start,
             end: r.end,
@@ -1420,6 +1579,7 @@ export function findSensitiveEntities(
           if (isOrgMatchOnBankLine(text, m.index!)) return null
           const r = trimMatchRange(m[0], m.index!)
           if (!r || r.value.length < 5) return null
+          if (isOrgInContractTitleContext(text, r.start, r.value)) return null
           return {
             start: r.start,
             end: r.end,
@@ -1525,7 +1685,7 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /(?:^|[\s,.:;()_\-])([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ]\.\s*[А-ЯЁ]\.)(?=[\s,.:;()\]_\-]|$)/gu,
+        /(?:^|[\s,.:;()_\-])([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ]\.\s*[А-ЯЁ]\.?)(?=[\s,.:;()\]_\-]|$)/gu,
         (m) => {
           const w1 = m[1] ?? ''
           const w2 = (m[2] ?? '').replace(/\s+/g, ' ')
@@ -2362,6 +2522,20 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
+        /(?<![\p{L}\p{N}_])(?:ПАО|АО|ЗАО|ОАО|НКО)(?:\s+(?:КБ|Банк))?\s+"[^"]*БАНК\s+"[^"]+"/giu,
+        (m) => mapBankInstitutionMatch(text, m),
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?<![\p{L}\p{N}_])(?:ПАО|АО|ЗАО|ОАО|НКО)(?:\s+(?:КБ|Банк))?\s+«[^»\n]*БАНК[^»\n]*»/giu,
+        (m) => mapBankInstitutionMatch(text, m),
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
         /(?<![\p{L}\p{N}_])(?:ПАО|АО|ЗАО|ОАО|НКО)(?:\s+(?:КБ|Банк))?\s+(?:«[^»\n]{1,80}»|"[^"\n]{1,80}")/giu,
         (m) => mapBankInstitutionMatch(text, m),
       ),
@@ -2544,6 +2718,12 @@ export function findSensitiveEntities(
             priority: 44,
           }
         },
+      ),
+    )
+
+    raw.push(
+      ...collectUnlabeledHeaderAddresses(text).filter(
+        (m) => !overlapsLabeledAddress(m.start, m.end, labeledAddressSpans),
       ),
     )
   }

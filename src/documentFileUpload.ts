@@ -33,6 +33,26 @@ export function readTxtFile(file: File): Promise<string> {
   })
 }
 
+/** ПАО « / " + перенос + БАНК … → одна строка (mammoth разрывает название банка) */
+const SPLIT_BANK_ORG_LINE_RE =
+  /(ПАО|АО)\s+([«"\u00AB\u201C])\s*\n\s*(БАНК)/giu
+
+/** Склеенные метки реквизитов (Банк — только с двоеточием, чтобы не резать «…БАНК «…») */
+const GLUED_REQUISITE_LABEL_RE =
+  /(?<=[^\s\n])(?:Юридический\s+адрес|Почтовый\s+адрес|Расч[её]тный\s+сч[её]т|Расчетный\s+счет|Генеральный\s+директор|E-mail|Email|ОГРНИП|ОГРН|ИНН|КПП|Адрес|Телефон|Сайт|БИК|Банк(?=\s*[:：])|к\s*\/\s*с|Р\s*\/\s*[сc])(?=\s*[:：]|\s|$)/giu
+
+/**
+ * Нормализация сырого текста из .docx: пробелы, \\r и разделение склеенных реквизитов.
+ * Для .txt не используется.
+ */
+export function normalizeExtractedDocumentText(text: string): string {
+  let s = text.replace(/\u00a0/g, ' ').replace(/\r\n?/g, '\n')
+  s = s.replace(SPLIT_BANK_ORG_LINE_RE, '$1 $2$3')
+  s = s.replace(/\](?=\[)/g, ']\n')
+  s = s.replace(GLUED_REQUISITE_LABEL_RE, (label) => `\n${label}`)
+  return s
+}
+
 /** Извлечение текста из .docx через mammoth (только в браузере) */
 export async function readDocxFile(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer()
@@ -40,7 +60,7 @@ export async function readDocxFile(file: File): Promise<string> {
   if (!result.value.trim()) {
     throw new Error(EMPTY_DOCX_ERROR)
   }
-  return result.value
+  return normalizeExtractedDocumentText(result.value)
 }
 
 /** Универсальное чтение .txt / .docx */
