@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { UsageGuideModal } from './UsageGuideModal'
 import {
   applyMasking,
@@ -10,6 +10,7 @@ import {
 import { OfficialBanner, TrustFooter, UnofficialHostWarning } from './TrustChrome'
 import { downloadReplacementMap } from './replacementMap'
 import { isAllowedHostname } from './trustConfig'
+import { readTxtFile, validateTxtFile } from './txtFileUpload'
 
 type Row = FoundEntity & { replace: boolean }
 
@@ -47,6 +48,8 @@ export default function App() {
   const [resultText, setResultText] = useState('')
   const [copyHint, setCopyHint] = useState<string | null>(null)
   const [usageGuideOpen, setUsageGuideOpen] = useState(false)
+  const [sourceFileHint, setSourceFileHint] = useState<string | null>(null)
+  const txtFileInputRef = useRef<HTMLInputElement>(null)
 
   const hasRows = rows.length > 0
   const hasReplaceableRows = rows.some((r) => r.replace)
@@ -121,7 +124,38 @@ export default function App() {
     setRows([])
     setResultText('')
     setCopyHint(null)
+    setSourceFileHint(null)
   }, [])
+
+  const handleTxtFilePick = useCallback(() => {
+    txtFileInputRef.current?.click()
+  }, [])
+
+  const handleTxtFileChange = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0]
+      e.target.value = ''
+      if (!file) return
+
+      const validationError = validateTxtFile(file)
+      if (validationError) {
+        setSourceFileHint(validationError)
+        return
+      }
+
+      try {
+        const text = await readTxtFile(file)
+        setSourceText(text)
+        setRows([])
+        setResultText('')
+        setCopyHint(null)
+        setSourceFileHint(null)
+      } catch {
+        setSourceFileHint('Не удалось прочитать файл.')
+      }
+    },
+    [],
+  )
 
   const handleClearAll = useCallback(() => {
     setSourceText('')
@@ -175,14 +209,45 @@ export default function App() {
       <UsageGuideModal open={usageGuideOpen} onClose={() => setUsageGuideOpen(false)} />
 
       <section className="panel">
-        <label className="field-label" htmlFor="source">
-          Исходный текст
-        </label>
+        <div className="source-panel__head">
+          <label className="field-label" htmlFor="source">
+            Исходный текст
+          </label>
+          <div className="source-upload">
+            <input
+              ref={txtFileInputRef}
+              type="file"
+              className="source-upload__input"
+              accept=".txt,text/plain"
+              onChange={handleTxtFileChange}
+              tabIndex={-1}
+              aria-hidden
+            />
+            <button
+              type="button"
+              className="btn btn--outline source-upload__btn"
+              onClick={handleTxtFilePick}
+            >
+              Загрузить .txt
+            </button>
+            <p className="source-upload__note">
+              Файл читается локально в браузере и не отправляется на сервер.
+            </p>
+          </div>
+        </div>
+        {sourceFileHint ? (
+          <p className="source-upload__hint" role="alert">
+            {sourceFileHint}
+          </p>
+        ) : null}
         <textarea
           id="source"
           className="textarea textarea--tall"
           value={sourceText}
-          onChange={(e) => setSourceText(e.target.value)}
+          onChange={(e) => {
+            setSourceText(e.target.value)
+            if (sourceFileHint) setSourceFileHint(null)
+          }}
           placeholder="Вставьте текст договора, счёта, письма или выписки…"
           spellCheck={false}
         />

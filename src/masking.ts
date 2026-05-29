@@ -286,11 +286,41 @@ function isContractClauseRef(ref: string): boolean {
   return /^\d{1,2}\.\d{1,2}(?:\.\d+)?$/u.test(ref.trim())
 }
 
+/** Реальный номер/код после № (не заглушка даты, не «г.___», не пустой хвост) */
+function isValidContractNumberToken(tok: string): boolean {
+  const t = tok.trim()
+  if (t.length < 2 || t.length > 64) return false
+  if (isContractClauseRef(t)) return false
+  if (/^[_\-.«»"'`№\s]+$/u.test(t)) return false
+  if (/_{2,}/u.test(t) && !/\d/u.test(t)) return false
+  if (/^г\./iu.test(t) && !/\d{2,}/u.test(t)) return false
+  if (/^«\s*_+\s*»$/u.test(t)) return false
+
+  const digits = (t.match(/\d/gu) ?? []).length
+  const letters = (t.match(/\p{L}/gu) ?? []).length
+  const core = t.replace(/[^\p{L}\p{N}]/gu, '')
+  if (core.length < 1) return false
+  if (/^\d+$/u.test(t) && digits >= 2) return true
+  if (digits >= 3) return true
+  if (digits >= 1 && letters >= 1 && core.length >= 4) return true
+  return false
+}
+
+/** В той же строке перед № есть контекст договора (заголовок, не приложение) */
+function isContractNumberLineContext(line: string, noIdx: number): boolean {
+  const before = line.slice(0, noIdx)
+  if (!/договор/iu.test(before)) return false
+  if (/приложение\s*$/iu.test(before.trimEnd())) return false
+  if (/^(?:приложение|форма|таблица|форм[аы])\b/iu.test(line.trimStart())) return false
+  return true
+}
+
 function isLikelyShortFioSurname(w: string): boolean {
   if (w.length < 2 || w.length > 32) return false
   const low = w.toLowerCase()
   if (FIO_BLOCKLIST.has(low)) return false
   if (FIO_PREPOSITION_WORDS.has(low)) return false
+  if (isFioPartyRoleWord(w)) return false
   if (/\d/.test(w)) return false
   return true
 }
@@ -712,6 +742,63 @@ const FIO_PREPOSITION_WORDS = new Set(
   ),
 )
 
+/** Роли сторон в реквизитах / подписи — не ФИО */
+const FIO_PARTY_ROLE_WORDS = new Set(
+  [
+    'покупатель',
+    'продавец',
+    'заказчик',
+    'исполнитель',
+    'арендатор',
+    'субарендатор',
+    'лизингодатель',
+    'лизингополучатель',
+  ].map((w) => w.toLowerCase()),
+)
+
+function isFioPartyRoleWord(w: string): boolean {
+  return FIO_PARTY_ROLE_WORDS.has(w.trim().toLowerCase())
+}
+
+/** «М.П.» — место печати, не инициалы лица */
+function isSealPlaceInitials(i1: string, i2: string): boolean {
+  return i1.trim().toUpperCase() === 'М' && i2.trim().toUpperCase() === 'П'
+}
+
+/** М.П. + роль стороны; «Д.В.Покупатель» и т.п. */
+function isFalseFioSealOrPartyRole(
+  text: string,
+  start: number,
+  end: number,
+  value: string,
+): boolean {
+  const v = value.trim()
+
+  const compact = v.match(/^([А-ЯЁ])\.\s*([А-ЯЁ])\.\s*([А-ЯЁ][а-яё]{1,32})$/u)
+  if (compact) {
+    if (isSealPlaceInitials(compact[1]!, compact[2]!)) return true
+    if (isFioPartyRoleWord(compact[3]!)) return true
+  }
+
+  const surInit = v.match(/^([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ])\.\s*([А-ЯЁ])\.?$/u)
+  if (surInit) {
+    if (isFioPartyRoleWord(surInit[1]!)) return true
+    if (isSealPlaceInitials(surInit[2]!, surInit[3]!)) return true
+  }
+
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1
+  const lineEnd = text.indexOf('\n', end)
+  const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd)
+  const before = line.slice(0, start - lineStart)
+  if (/\bМ\.?\s*П\.?/iu.test(before)) {
+    for (const w of v.split(/\s+/)) {
+      if (isFioPartyRoleWord(w)) return true
+    }
+  }
+
+  return false
+}
+
 /** Строка «Приложение №…» / «ФОРМА №…» / «Таблица №…» — не искать в ней ФИО */
 function isFioOnAppendixFormLine(text: string, pos: number): boolean {
   const lineStart = text.lastIndexOf('\n', pos - 1) + 1
@@ -765,9 +852,73 @@ function isLikelyFio(words: [string, string, string]): boolean {
   for (const w of words) {
     if (w.length < 2 || w.length > 32) return false
     if (FIO_BLOCKLIST.has(w.toLowerCase())) return false
+    if (isFioPartyRoleWord(w)) return false
     if (/\d/.test(w)) return false
   }
   return true
+}
+
+const POA_FIO_EXTRA_BLOCKLIST = new Set(
+  [
+    'российская',
+    'российской',
+    'федерация',
+    'федерации',
+    'санкт',
+    'петербург',
+    'петербурга',
+    'москва',
+    'москвы',
+    'генеральный',
+    'генерального',
+    'директор',
+    'директора',
+    'форм',
+    'форма',
+    'таблица',
+    'приложение',
+    'гражданин',
+    'гражданка',
+    'гражданку',
+    'гражданина',
+  ].map((w) => w.toLowerCase()),
+)
+
+/** ФИО 2–3 слова после «уполномочивает» в доверенности (косвенные падежи) */
+function isLikelyPoaFio(words: string[]): boolean {
+  if (words.length < 2 || words.length > 3) return false
+  for (const w of words) {
+    if (w.length < 2 || w.length > 32) return false
+    const low = w.toLowerCase()
+    if (FIO_BLOCKLIST.has(low) || FIO_PREPOSITION_WORDS.has(low)) return false
+    if (isFioPartyRoleWord(w)) return false
+    if (POA_FIO_EXTRA_BLOCKLIST.has(low)) return false
+    if (/\d/.test(w)) return false
+  }
+  return true
+}
+
+function mapPoaAuthorizedFioMatch(
+  text: string,
+  m: RegExpMatchArray,
+): Omit<RawMatch, 'priority' | 'categoryId'> & { categoryId: CategoryId; priority: number } | null {
+  const inner = (m[1] ?? '').trim()
+  const words = inner.split(/\s+/).filter(Boolean)
+  if (!isLikelyPoaFio(words)) return null
+  const start = m.index! + m[0].indexOf(words[0]!)
+  const end = start + inner.length
+  if (isFioOnAppendixFormLine(text, start)) return null
+  if (isFalseFioNearAppendixNumber(text, start, end)) return null
+  if (isFalseFioSealOrPartyRole(text, start, end, inner)) return null
+  return {
+    start,
+    end,
+    value: inner,
+    categoryId: 'fio' as const,
+    placeholderTag: 'ФИО' as const,
+    typeLabel: 'ФИО',
+    priority: 55,
+  }
 }
 
 let idSeq = 0
@@ -1246,6 +1397,30 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('fio')) {
+    const poaFioWord = '[А-ЯЁ][а-яё]{1,28}'
+    const poaFioCtx =
+      '(?:настоящей\\s+доверенностью\\s+)?уполномочивает\\s*:?\\s*(?:\\r?\\n\\s*)?'
+    const poaFioStop =
+      '(?=\\s*,|\\s*\\r?\\n\\s*(?:граждан(?:ин|ка|ки|ку|ом|е)?|паспорт|зарегистрир|действующ)|,\\s*(?:граждан|паспорт|зарегистрир|действующ))'
+
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(
+          `${poaFioCtx}(${poaFioWord}\\s+${poaFioWord}\\s+${poaFioWord})${poaFioStop}`,
+          'giu',
+        ),
+        (m) => mapPoaAuthorizedFioMatch(text, m),
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(`${poaFioCtx}(${poaFioWord}\\s+${poaFioWord})${poaFioStop}`, 'giu'),
+        (m) => mapPoaAuthorizedFioMatch(text, m),
+      ),
+    )
+
     const fioRe =
       /(?:^|[\s,.:;()_\-])(?!Обществ|Приложение|ПРИЛОЖЕНИЕ|Форма|ФОРМА|Таблица|ТАБЛИЦА)([А-ЯЁ][а-яё]{1,24})\s+([А-ЯЁ][а-яё]{1,24})\s+((?:[А-ЯЁ][а-яё]*(?:ович|евич|вна|ична|ича|оглы|кызы|ич)(?:[аеиоуыья])?)|(?:[А-ЯЁ][а-яё]{7,}))(?=[\s,.:;()\]_\-]|$)/gu
     raw.push(
@@ -1269,6 +1444,7 @@ export function findSensitiveEntities(
         if (/милици|полици|мвд|уфмс|овд|выдан|подразделения|№\s*подр|подр\./i.test(beforeInLine))
           return null
         if (isFalseFioNearAppendixNumber(text, start, end)) return null
+        if (isFalseFioSealOrPartyRole(text, start, end, inner)) return null
         return {
           start,
           end,
@@ -1303,6 +1479,7 @@ export function findSensitiveEntities(
           if (/милици|полици|мвд|уфмс|овд|выдан|подразделения|№\s*подр|подр\./i.test(beforeInLine))
             return null
           if (isFalseFioNearAppendixNumber(text, start, end)) return null
+          if (isFalseFioSealOrPartyRole(text, start, end, inner)) return null
           return {
             start,
             end,
@@ -1327,11 +1504,14 @@ export function findSensitiveEntities(
           // небольшой фильтр против мусора; фамилия должна быть русской
           const sm = rawVal.match(/^([А-ЯЁ])\.\s*([А-ЯЁ])\.\s*([А-ЯЁ][а-яё]{1,32})$/u)
           if (!sm) return null
+          if (isSealPlaceInitials(sm[1]!, sm[2]!)) return null
+          if (isFioPartyRoleWord(sm[3]!)) return null
           const start = m.index! + m[0].indexOf(rawVal)
           const r = trimMatchRange(rawVal, start)
           if (!r) return null
           if (isFioOnAppendixFormLine(text, r.start)) return null
           if (isFalseFioNearAppendixNumber(text, r.start, r.end)) return null
+          if (isFalseFioSealOrPartyRole(text, r.start, r.end, r.value)) return null
 
           return {
             start: r.start,
@@ -1533,12 +1713,20 @@ export function findSensitiveEntities(
   if (enabled.has('contract_number')) {
     const cnPri = 68
     const noNum = '(?:№|\\u2116)'
+    const noSep = '[ \\t\\u00A0]*'
     const contractToken = '[^\\s,;\\n]{2,64}'
     const contractRes: RegExp[] = [
-      new RegExp(`Государственный\\s+контракт\\s+[^\\n]{0,200}?${noNum}\\s*${contractToken}`, 'giu'),
-      new RegExp(`к\\s+Договору\\s*${noNum}\\s*${contractToken}`, 'giu'),
-      new RegExp(`Договор\\s*${noNum}\\s*${contractToken}`, 'giu'),
-      new RegExp(`Контракт\\s*${noNum}\\s*${contractToken}`, 'giu'),
+      new RegExp(
+        `Государственный\\s+контракт\\s+[^\\n]{0,200}?${noNum}${noSep}${contractToken}`,
+        'giu',
+      ),
+      new RegExp(`к\\s+Договору\\s*${noNum}${noSep}${contractToken}`, 'giu'),
+      new RegExp(
+        `Договор\\s*${noNum}${noSep}${contractToken}\\s+от\\s*(?:0[1-9]|[12]\\d|3[01])\\.(?:0[1-9]|1[0-2])\\.(?:19|20)\\d{2}`,
+        'giu',
+      ),
+      new RegExp(`Договор\\s*${noNum}${noSep}${contractToken}`, 'giu'),
+      new RegExp(`Контракт\\s*${noNum}${noSep}${contractToken}`, 'giu'),
     ]
 
     // Договор(а/у) №/N 1786656 от 27.04.2017 — важна дата целиком.
@@ -1567,13 +1755,51 @@ export function findSensitiveEntities(
         },
       ),
     )
+
+    // «…ДОГОВОР… № 59» в заголовке — только «№» и номер, без всего заголовка
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(
+          `(?:^|[^\\p{L}\\p{N}_])(${noNum}${noSep}([^\\s,;\\n]{1,64}))(?=$|[^\\p{L}\\p{N}_]|\\s*[,;])`,
+          'giu',
+        ),
+        (m) => {
+          const numPart = m[1] ?? ''
+          const tok = (m[2] ?? '').trim()
+          if (!isValidContractNumberToken(tok)) return null
+          const lead = m[0].length - m[0].trimStart().length
+          const innerStart = m.index! + lead
+          const inner = numPart.trim()
+          const start = innerStart + numPart.indexOf(inner)
+          const end = start + inner.length
+          const lineStart = text.lastIndexOf('\n', start - 1) + 1
+          const lineEndIdx = text.indexOf('\n', start)
+          const line = text.slice(lineStart, lineEndIdx === -1 ? text.length : lineEndIdx)
+          const posInLine = start - lineStart
+          const noIdx = line.indexOf('№', posInLine)
+          const noIdx2 = noIdx >= 0 ? noIdx : line.indexOf('\u2116', posInLine)
+          if (noIdx2 < 0 || !isContractNumberLineContext(line, noIdx2)) return null
+          return {
+            start,
+            end,
+            value: inner,
+            categoryId: 'contract_number' as const,
+            placeholderTag: 'НОМЕР_ДОГОВОРА' as const,
+            typeLabel: 'Номер договора / документа' as const,
+            priority: cnPri + 3,
+          }
+        },
+      ),
+    )
+
     for (const re of contractRes) {
       raw.push(
         ...collectRegexMatches(text, re, (m) => {
           const full = m[0]
           if (/^приложение\s*(?:№|\u2116|N|No)/iu.test(full)) return null
           const tok = tokenAfterLastNoSign(full)
-          if (!tok || isContractClauseRef(tok)) return null
+          if (!tok || !isValidContractNumberToken(tok)) return null
           const r = trimMatchRange(full, m.index!)
           if (!r) return null
           return {
@@ -1592,11 +1818,11 @@ export function findSensitiveEntities(
     // Лизинг: «договор(у) лизинга № ... от dd.dd.yyyy», а также «№ ... от ...» рядом со словами «договор...лизинга».
     const leaseRes: RegExp[] = [
       new RegExp(
-        `(?:по\\s+)?договор(?:у|а)?(?:\\s+лизинга)?[^\\n]{0,80}?${noNum}\\s*[^\\s,;\\n]{2,64}(?:\\s*от\\s*(?:0[1-9]|[12]\\d|3[01])\\.(?:0[1-9]|1[0-2])\\.(?:19|20)\\d{2})?`,
+        `(?:по\\s+)?договор(?:у|а)?\\s+лизинга${noSep}${noNum}${noSep}${contractToken}(?:\\s+от\\s*(?:0[1-9]|[12]\\d|3[01])\\.(?:0[1-9]|1[0-2])\\.(?:19|20)\\d{2})?`,
         'giu',
       ),
       new RegExp(
-        `договор(?:у|а)?\\s+лизинга[^\\n]{0,80}?${noNum}\\s*[^\\s,;\\n]{2,64}\\s*от\\s*(?:0[1-9]|[12]\\d|3[01])\\.(?:0[1-9]|1[0-2])\\.(?:19|20)\\d{2}`,
+        `договор(?:у|а)?\\s+лизинга[^\\n]{0,40}?${noNum}${noSep}${contractToken}\\s+от\\s*(?:0[1-9]|[12]\\d|3[01])\\.(?:0[1-9]|1[0-2])\\.(?:19|20)\\d{2}`,
         'giu',
       ),
     ]
@@ -1611,7 +1837,7 @@ export function findSensitiveEntities(
 
           if (/^приложение\s*(?:№|\u2116|N|No)/iu.test(inner)) return null
           const tok = tokenAfterLastNoSign(inner)
-          if (!tok || isContractClauseRef(tok)) return null
+          if (!tok || !isValidContractNumberToken(tok)) return null
 
           const r = trimMatchRange(inner, baseStart)
           if (!r) return null
