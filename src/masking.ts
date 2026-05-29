@@ -462,7 +462,7 @@ function isValidAddressCandidate(value: string): boolean {
   // у настоящего адреса должны быть признаки адреса
   const hasAddressMarkers =
     /\b\d{6}\b/u.test(v) ||
-    /\b(?:г\.|город|ул\.|улица|наб\.|набережная|проспект|д\.|дом|корп\.|к\.|кв\.|оф\.|офис|пом\.|помещение|лит\.|литера|а\/я|санкт-петербург|москва)\b/iu.test(
+    /\b(?:г\.|город|ул\.|улица|наб\.|набережная|пр\.|проспект|д\.|дом|корп\.|к\.|кв\.|оф\.|офис|пом\.|помещение|лит\.|литера|а\/я|обл\.|область|санкт-петербург|москва)\b/iu.test(
       v,
     )
 
@@ -476,6 +476,9 @@ function isValidAddressCandidate(value: string): boolean {
 /** Метки явного адреса (длинные ветки раньше короткой «Адрес») */
 const LABELED_ADDRESS_LABEL_RE =
   /(?:Юридический\s+адрес|Почтовый\s+адрес|Адрес\s+места\s+нахождения|Адрес\s+регистрации|Место\s+нахождения|Место\s+регистрации|Место\s+жительства|зарегистрирован\s+по\s+адресу)\s*:?\s*|Адрес\s*:\s*/giu
+
+/** Без /g — не трогает lastIndex глобального LABELED_ADDRESS_LABEL_RE при exec по срезу */
+const LABELED_ADDRESS_LABEL_ANCHOR_RE = new RegExp(LABELED_ADDRESS_LABEL_RE.source, 'iu')
 
 /** Строка начинается с банковского реквизита (в т.ч. «Расчётный» / «счёт:» на отдельных строках) */
 function isBankRequisiteLineStart(line: string): boolean {
@@ -497,18 +500,68 @@ function isBankRequisiteLineStart(line: string): boolean {
 const LABELED_ADDRESS_LINE_STOP_RE =
   /^(?:ИНН|КПП|ОГРН(?:ИП)?|БИК|Расчётный|Расчетный|Расчётный\s+счёт|Расчетный\s+счет|счёт\s*:|счет\s*:|Р\/\s*с|р\/\s*с|к\/\s*с|Корр|корр|Банк|Телефон|Email|E-mail|Директор|Генеральный\s+директор|Подпись|Покупатель|Продавец|Исполнитель|Заказчик)\b/iu
 
+const ADDRESS_CONTINUATION_MARKERS_RE =
+  /(?:\d{6}|г\.|город|ул\.|улица|наб\.|набережная|пр\.|пр-кт|просп\.?|проспект|пер\.|переулок|б-р|бульвар|ш\.|шоссе|д\.|дом|лит\.|литера|пом\.|помещение|офис|кв\.|квартира|а\/я|российская|республика|респ\.|санкт|петербург|москва|обл\.|область|край)/iu
+
+function normalizeAddressLineRaw(line: string): string {
+  return line.replace(/\r/g, '').replace(/\u00a0/g, ' ')
+}
+
+/** Обрезка строки адреса перед встроенным банковским реквизитом */
+function addressLineEndBeforeInlineBank(line: string): number {
+  const bankInlineStopRe =
+    /(?:^|[\s,;(\n])(?:р\/\s*с|р\.с\.|расч(?:ёт|ет)ный(?:\s+|\s*\n\s*)сч(?:ёт|ет)|расчетный(?:\s+|\s*\n\s*)счет|расч(?:ёт|ет)ный|расчетный|к\/\s*с|корр(?:\.|\/)?\s*с|корр(?:еспондентский)?\s+сч(?:ёт|ет)?|бик|банк|инн|кпп|огрн(?:ип)?)(?=$|[^\p{L}\p{N}_])/giu
+  let stopAt = line.length
+  let sm: RegExpExecArray | null
+  bankInlineStopRe.lastIndex = 0
+  while ((sm = bankInlineStopRe.exec(line)) !== null) {
+    const at = sm.index + (sm[0].length - sm[0].trimStart().length)
+    if (at >= 0 && at < stopAt) stopAt = at
+  }
+  return stopAt
+}
+
 function isLabeledAddressContinuationLine(line: string): boolean {
-  const t = line.trim()
+  const t = normalizeAddressLineRaw(line).trim()
   if (!t) return false
   if (isBankRequisiteLineStart(line)) return false
   if (LABELED_ADDRESS_LINE_STOP_RE.test(t)) return false
   if (/^в\s+адрес\b/iu.test(t)) return false
   if (/^адреса\s+и\s+реквизиты/iu.test(t)) return false
   return (
-    /(?:\d{6}|г\.|город|ул\.|улица|наб\.|набережная|проспект|д\.|дом|лит\.|пом\.|офис|кв\.|а\/я|российская|республика|санкт|москва|область|край)/iu.test(
-      t,
-    ) || /^[А-ЯЁа-яё][А-ЯЁа-яё0-9\s.,\-]{1,100}$/u.test(t)
+    ADDRESS_CONTINUATION_MARKERS_RE.test(t) ||
+    /^[А-ЯЁа-яё][А-ЯЁа-яё0-9\s.,\-]{1,120}$/u.test(t)
   )
+}
+
+type LabeledAddressSpan = { start: number; end: number }
+
+/** Один проход по тексту: границы адресов с меткой (для защиты от дублей) */
+function collectLabeledAddressSpans(text: string): LabeledAddressSpan[] {
+  const spans: LabeledAddressSpan[] = []
+  LABELED_ADDRESS_LABEL_RE.lastIndex = 0
+  let lm: RegExpExecArray | null
+  while ((lm = LABELED_ADDRESS_LABEL_RE.exec(text)) !== null) {
+    const labelStart = lm.index
+    const block = extractLabeledAddressRange(text, labelStart)
+    if (!block) continue
+    const trimmed = trimAddressCandidate(block.value)
+    if (trimmed.length < 8 || !isValidAddressCandidate(trimmed)) continue
+    spans.push({ start: block.start, end: block.start + trimmed.length })
+  }
+  return spans
+}
+
+/** Строка продолжения адреса с меткой «Адрес:» уже покрыта этим блоком */
+function overlapsLabeledAddress(
+  start: number,
+  end: number,
+  labeledSpans: readonly LabeledAddressSpan[],
+): boolean {
+  for (const span of labeledSpans) {
+    if (start < span.end && end > span.start) return true
+  }
+  return false
 }
 
 /** Тело адреса с меткой: до 4 строк, не более ~360 символов от метки */
@@ -517,22 +570,35 @@ function extractLabeledAddressRange(
   labelStart: number,
 ): { start: number; end: number; value: string } | null {
   const head = text.slice(labelStart)
-  LABELED_ADDRESS_LABEL_RE.lastIndex = 0
-  const labelMatch = LABELED_ADDRESS_LABEL_RE.exec(head)
+  const labelMatch = LABELED_ADDRESS_LABEL_ANCHOR_RE.exec(head)
   if (!labelMatch || labelMatch.index !== 0) return null
 
-  const maxSpan = 380
+  const maxSpan = 420
   let lineStart = labelStart + labelMatch[0].length
   let end = lineStart
+  let lineIdx = 0
 
-  for (let lineIdx = 0; lineIdx < 4 && lineStart - labelStart < maxSpan; lineIdx++) {
+  while (lineIdx < 6 && lineStart - labelStart < maxSpan) {
     const nl = text.indexOf('\n', lineStart)
     const lineEnd = nl === -1 ? text.length : nl
-    const line = text.slice(lineStart, lineEnd)
-    if (isBankRequisiteLineStart(line)) break
-    if (lineIdx > 0 && !isLabeledAddressContinuationLine(line)) break
-    end = lineEnd
-    if (nl === -1) break
+    const line = normalizeAddressLineRaw(text.slice(lineStart, lineEnd))
+    const inlineStop = addressLineEndBeforeInlineBank(line)
+    const effective = line.slice(0, inlineStop).trimEnd()
+    const hitInlineBank = inlineStop < line.length
+
+    if (!effective) {
+      if (nl === -1) break
+      lineStart = nl + 1
+      continue
+    }
+
+    if (isBankRequisiteLineStart(effective)) break
+    if (lineIdx > 0 && !isLabeledAddressContinuationLine(effective)) break
+
+    end = lineStart + inlineStop
+    lineIdx++
+
+    if (nl === -1 || hitInlineBank) break
     lineStart = nl + 1
   }
 
@@ -546,9 +612,9 @@ function isPremisesInsideLabeledAddress(text: string, start: number, end: number
   const windowStart = Math.max(0, start - 420)
   const before = text.slice(windowStart, start)
   let lastLabelEnd = -1
-  LABELED_ADDRESS_LABEL_RE.lastIndex = 0
+  const labelRe = new RegExp(LABELED_ADDRESS_LABEL_RE.source, 'giu')
   let lm: RegExpExecArray | null
-  while ((lm = LABELED_ADDRESS_LABEL_RE.exec(before)) !== null) {
+  while ((lm = labelRe.exec(before)) !== null) {
     lastLabelEnd = windowStart + lm.index + lm[0].length
   }
   if (lastLabelEnd < 0) return false
@@ -2331,6 +2397,8 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('address')) {
+    const labeledAddressSpans = collectLabeledAddressSpans(text)
+
     // Адреса с явной меткой (в т.ч. 2–3 продолжения на следующих строках)
     raw.push(
       ...collectRegexMatches(text, LABELED_ADDRESS_LABEL_RE, (m) => {
@@ -2365,9 +2433,11 @@ export function findSensitiveEntities(
           if (vt.length < 18) return null
           const trimmed = trimAddressCandidate(vt)
           if (trimmed.length < 18) return null
+          const end = start + trimmed.length
+          if (overlapsLabeledAddress(start, end, labeledAddressSpans)) return null
           return {
             start,
-            end: start + trimmed.length,
+            end,
             value: trimmed,
             categoryId: 'address' as const,
             placeholderTag: 'АДРЕС' as const,
@@ -2387,9 +2457,11 @@ export function findSensitiveEntities(
           if (!r) return null
           const trimmed = trimAddressCandidate(r.value)
           if (trimmed.length < 12) return null
+          const end = r.start + trimmed.length
+          if (overlapsLabeledAddress(r.start, end, labeledAddressSpans)) return null
           return {
             start: r.start,
-            end: r.start + trimmed.length,
+            end,
             value: trimmed,
             categoryId: 'address' as const,
             placeholderTag: 'АДРЕС' as const,
@@ -2402,15 +2474,17 @@ export function findSensitiveEntities(
     raw.push(
       ...collectRegexMatches(
         text,
-        /\b\d{6}\s*,\s*[^,\n]+,\s*(?:ул\.?|улица|наб\.?|набережная|пр\.?|пр-кт|просп\.?|проспект|пер\.?|переулок|б-р|бульвар|ш\.?|шоссе)\s+[^,\n]+(?:,\s*[^,\n]+){0,14}/giu,
+        /\b\d{6}\s*,\s*[^\n,]{1,120},\s*(?:ул\.?|улица|наб\.?|набережная|пр\.?|пр-кт|просп\.?|проспект|пер\.?|переулок|б-р|бульвар|ш\.?|шоссе)\s+[^\n,]{1,120}(?:,\s*[^\n,]{1,80}){0,8}/giu,
         (m) => {
           const r = trimMatchRange(m[0], m.index!)
           if (!r) return null
           const trimmed = trimAddressCandidate(r.value)
           if (trimmed.length < 12) return null
+          const end = r.start + trimmed.length
+          if (overlapsLabeledAddress(r.start, end, labeledAddressSpans)) return null
           return {
             start: r.start,
-            end: r.start + trimmed.length,
+            end,
             value: trimmed,
             categoryId: 'address' as const,
             placeholderTag: 'АДРЕС' as const,
@@ -2432,9 +2506,11 @@ export function findSensitiveEntities(
           if (!r) return null
           const trimmed = trimAddressCandidate(r.value)
           if (trimmed.length < 8) return null
+          const end = r.start + trimmed.length
+          if (overlapsLabeledAddress(r.start, end, labeledAddressSpans)) return null
           return {
             start: r.start,
-            end: r.start + trimmed.length,
+            end,
             value: trimmed,
             categoryId: 'address' as const,
             placeholderTag: 'АДРЕС' as const,
@@ -2456,9 +2532,11 @@ export function findSensitiveEntities(
           if (!r) return null
           const trimmed = trimAddressCandidate(r.value)
           if (trimmed.length < 8) return null
+          const end = r.start + trimmed.length
+          if (overlapsLabeledAddress(r.start, end, labeledAddressSpans)) return null
           return {
             start: r.start,
-            end: r.start + trimmed.length,
+            end,
             value: trimmed,
             categoryId: 'address' as const,
             placeholderTag: 'АДРЕС' as const,
