@@ -781,6 +781,100 @@ function isOrgMatchOnBankLine(text: string, start: number): boolean {
   return /^\s*(?:Банк|банк)(?:\s+получателя)?\s*[:\-–.]/.test(line)
 }
 
+const GOV_ORG_MAX_LEN = 140
+
+function isFalseGovernmentOrgValue(value: string): boolean {
+  const v = value.trim()
+  if (v.length < 5 || v.length > GOV_ORG_MAX_LEN) return true
+  if (/\b(?:ИНН|КПП|ОГРН|телефон|тел\.|адрес)\s*:/iu.test(v)) return true
+  if (/(?:пр-кт|просп\.|литера\s*[а-яёa-z]|,\s*\d{6}\s*,)/iu.test(v)) return true
+  if (/^[,.\d\s]+$/u.test(v)) return true
+  return false
+}
+
+function mapGovernmentOrgMatch(
+  text: string,
+  m: RegExpMatchArray,
+  typeLabel = 'Гос. орган',
+): Omit<RawMatch, 'priority' | 'categoryId'> & { categoryId: CategoryId; priority: number } | null {
+  if (isOrgMatchOnBankLine(text, m.index!)) return null
+  const inner = (m[1] ?? m[0]).trim()
+  const lead = m[0].indexOf(inner)
+  const start = m.index! + (lead >= 0 ? lead : 0)
+  const end = start + inner.length
+  if (isFalseGovernmentOrgValue(inner)) return null
+  return {
+    start,
+    end,
+    value: inner,
+    categoryId: 'org_ip' as const,
+    placeholderTag: 'ОРГАНИЗАЦИЯ' as const,
+    typeLabel,
+    priority: 57,
+  }
+}
+
+/** Госорганы: МИНФИН, ФНС, УФНС, ИФНС, Федеральная налоговая служба */
+function collectGovernmentOrgMatches(text: string): RawMatch[] {
+  const region = '[^\\n,;)(]{2,80}'
+  const stop =
+    '(?=$|[\\s,;)(\\n]|\\s+Телефон|\\s+тел\\.|\\s+(?:ИНН|КПП|ОГРН)(?![\\p{L}\\p{N}_]))'
+  const specs: Array<{ re: RegExp; label: string }> = [
+    {
+      label: 'ИФНС (межрайонная, многостр.)',
+      re: new RegExp(
+        `Межрайонная\\s+инспекция\\s+Федеральной\\s+налоговой[\\s\\n]{0,4}службы\\s+№\\s*\\d{1,4}(?:\\s+по\\s+${region})?${stop}`,
+        'giu',
+      ),
+    },
+    {
+      label: 'ИФНС (межрайонная)',
+      re: new RegExp(
+        `Межрайонная\\s+ИФНС\\s+России\\s+№\\s*\\d{1,4}(?:\\s+по\\s+${region})?${stop}`,
+        'giu',
+      ),
+    },
+    {
+      label: 'УФНС',
+      re: new RegExp(`УФНС\\s+России(?:\\s+по\\s+${region})?${stop}`, 'giu'),
+    },
+    {
+      label: 'ИФНС',
+      re: new RegExp(
+        `(?<![\\p{L}\\p{N}_])ИФНС\\s+России\\s+№\\s*\\d{1,4}(?:\\s+по\\s+${region})?${stop}`,
+        'giu',
+      ),
+    },
+    {
+      label: 'ФНС',
+      re: new RegExp(
+        `(?<![\\p{L}\\p{N}_])ФНС\\s+России(?:\\s+по\\s+${region})?${stop}`,
+        'giu',
+      ),
+    },
+    {
+      label: 'Федеральная налоговая служба',
+      re: new RegExp(
+        `(?<![\\p{L}\\p{N}_])Федеральная\\s+налоговая\\s+служба${stop}`,
+        'giu',
+      ),
+    },
+    {
+      label: 'МИНФИН России',
+      re: new RegExp(`(?<![\\p{L}\\p{N}_])МИНФИН\\s+России${stop}`, 'giu'),
+    },
+  ]
+
+  const out: RawMatch[] = []
+  for (const { re, label } of specs) {
+    for (const m of text.matchAll(re)) {
+      const mapped = mapGovernmentOrgMatch(text, m, label)
+      if (mapped) out.push(mapped)
+    }
+  }
+  return out
+}
+
 /** Строка с паспортным / правоохранительным контекстом — не банк */
 function isPassportOrPoliceContext(line: string): boolean {
   return /МВД|УФМС|УМВД|ОВД|полици|милици|отделение\s+полиции|отделение\s+милиции|паспорт|выдан|серия|№\s*подр|подр\.|подразделения|код\s+подразделения/i.test(
@@ -1620,6 +1714,8 @@ export function findSensitiveEntities(
         },
       ),
     )
+
+    raw.push(...collectGovernmentOrgMatches(text))
   }
 
   if (enabled.has('fio')) {
