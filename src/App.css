@@ -334,7 +334,15 @@
   border: 0;
 }
 
-.source-upload__btn {
+.source-upload__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.source-upload__btn,
+.source-upload__clear {
   flex-shrink: 0;
 }
 
@@ -648,6 +656,10 @@
 
 .residual-panel__note {
   margin-bottom: 0.65rem;
+}
+
+.residual-panel__actions {
+  margin-top: 0.75rem;
 }
 
 .residual-list {

@@ -94,9 +94,17 @@ export default function App() {
   const [residualRisks, setResidualRisks] = useState<ResidualRisk[] | null>(null)
   const documentFileInputRef = useRef<HTMLInputElement>(null)
   const resultTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const inputSectionRef = useRef<HTMLElement>(null)
 
   const hasRows = rows.length > 0
   const hasReplaceableRows = rows.some((r) => r.replace)
+  const hasAnythingToClear =
+    Boolean(sourceText) ||
+    hasRows ||
+    Boolean(resultText) ||
+    residualRisks !== null ||
+    Boolean(sourceFileHint) ||
+    Boolean(copyHint)
 
   const toggleCategory = useCallback((id: CategoryId) => {
     setEnabledCategories((prev) => {
@@ -217,8 +225,12 @@ export default function App() {
     setRows([])
     setResultText('')
     setResidualRisks(null)
-    setEnabledCategories(defaultEnabledCategories())
     setCopyHint(null)
+    setSourceFileHint(null)
+    if (documentFileInputRef.current) documentFileInputRef.current.value = ''
+    requestAnimationFrame(() => {
+      inputSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
   }, [])
 
   const handleCheckResiduals = useCallback(() => {
@@ -281,7 +293,7 @@ export default function App() {
 
       <UsageGuideModal open={usageGuideOpen} onClose={() => setUsageGuideOpen(false)} />
 
-      <section className="panel">
+      <section className="panel" ref={inputSectionRef}>
         <div className="source-panel__head">
           <label className="field-label" htmlFor="source">
             Исходный текст
@@ -296,13 +308,23 @@ export default function App() {
               tabIndex={-1}
               aria-hidden
             />
-            <button
-              type="button"
-              className="btn btn--outline source-upload__btn"
-              onClick={handleDocumentFilePick}
-            >
-              Загрузить .txt / .docx
-            </button>
+            <div className="source-upload__actions">
+              <button
+                type="button"
+                className="btn btn--outline source-upload__btn"
+                onClick={handleDocumentFilePick}
+              >
+                Загрузить .txt / .docx
+              </button>
+              <button
+                type="button"
+                className="btn btn--danger source-upload__clear"
+                onClick={handleClearAll}
+                disabled={!hasAnythingToClear}
+              >
+                Очистить всё
+              </button>
+            </div>
             <p className="source-upload__note">
               Файл читается локально в браузере.
             </p>
@@ -473,7 +495,7 @@ export default function App() {
           >
             Проверить остатки
           </button>
-          <button type="button" className="btn btn--danger" onClick={handleClearAll}>
+          <button type="button" className="btn btn--danger" onClick={handleClearAll} disabled={!hasAnythingToClear}>
             Очистить всё
           </button>
           {copyHint ? <span className="hint">{copyHint}</span> : null}
@@ -517,6 +539,16 @@ export default function App() {
                     </li>
                   ))}
                 </ul>
+                <div className="residual-panel__actions">
+                  <button
+                    type="button"
+                    className="btn btn--danger"
+                    onClick={handleClearAll}
+                    disabled={!hasAnythingToClear}
+                  >
+                    Очистить всё
+                  </button>
+                </div>
               </>
             )}
           </div>
