@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { UsageGuideModal } from './UsageGuideModal'
 import {
   applyMasking,
@@ -7,6 +7,7 @@ import {
   type CategoryId,
   type FoundEntity,
 } from './masking'
+import { findResidualRisks, type ResidualRisk } from './residualCheck'
 import { OfficialBanner, TrustFooter, UnofficialHostWarning } from './TrustChrome'
 import { downloadReplacementMap } from './replacementMap'
 import { isAllowedHostname } from './trustConfig'
@@ -43,6 +44,43 @@ function defaultEnabledCategories(): Set<CategoryId> {
   return new Set(ensureCategoryOptions(CATEGORY_OPTIONS).map((c) => c.id))
 }
 
+function resolveResidualRiskRange(
+  text: string,
+  risk: ResidualRisk,
+): { start: number; end: number } | null {
+  const { index, fragment } = risk
+  if (!fragment) return null
+
+  if (index >= 0 && index + fragment.length <= text.length) {
+    if (text.slice(index, index + fragment.length) === fragment) {
+      return { start: index, end: index + fragment.length }
+    }
+  }
+
+  const from = index >= 0 ? Math.max(0, index - 32) : 0
+  const near = text.indexOf(fragment, from)
+  if (near !== -1) {
+    return { start: near, end: near + fragment.length }
+  }
+
+  const anywhere = text.indexOf(fragment)
+  if (anywhere !== -1) {
+    return { start: anywhere, end: anywhere + fragment.length }
+  }
+
+  return null
+}
+
+function scrollTextareaToSelection(textarea: HTMLTextAreaElement): void {
+  const start = textarea.selectionStart
+  const textBefore = textarea.value.slice(0, start)
+  const lineNumber = textBefore.split('\n').length - 1
+  const style = window.getComputedStyle(textarea)
+  const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.45
+  const target = lineNumber * lineHeight - textarea.clientHeight / 3
+  textarea.scrollTop = Math.max(0, target)
+}
+
 export default function App() {
   const [sourceText, setSourceText] = useState('')
   const [enabledCategories, setEnabledCategories] = useState<Set<CategoryId>>(
@@ -53,7 +91,9 @@ export default function App() {
   const [copyHint, setCopyHint] = useState<string | null>(null)
   const [usageGuideOpen, setUsageGuideOpen] = useState(false)
   const [sourceFileHint, setSourceFileHint] = useState<string | null>(null)
+  const [residualRisks, setResidualRisks] = useState<ResidualRisk[] | null>(null)
   const documentFileInputRef = useRef<HTMLInputElement>(null)
+  const resultTextareaRef = useRef<HTMLTextAreaElement>(null)
 
   const hasRows = rows.length > 0
   const hasReplaceableRows = rows.some((r) => r.replace)
@@ -95,6 +135,10 @@ export default function App() {
     setResultText(applyMasking(sourceText, rows))
   }, [sourceText, rows])
 
+  useEffect(() => {
+    setResidualRisks(null)
+  }, [resultText])
+
   const handleCopy = useCallback(async () => {
     if (!resultText) return
     try {
@@ -127,6 +171,7 @@ export default function App() {
     setSourceText('')
     setRows([])
     setResultText('')
+    setResidualRisks(null)
     setCopyHint(null)
     setSourceFileHint(null)
   }, [])
@@ -171,9 +216,27 @@ export default function App() {
     setSourceText('')
     setRows([])
     setResultText('')
+    setResidualRisks(null)
     setEnabledCategories(defaultEnabledCategories())
     setCopyHint(null)
   }, [])
+
+  const handleCheckResiduals = useCallback(() => {
+    setResidualRisks(findResidualRisks(resultText))
+  }, [resultText])
+
+  const handleJumpToResidualRisk = useCallback(
+    (risk: ResidualRisk) => {
+      const textarea = resultTextareaRef.current
+      if (!textarea) return
+      const range = resolveResidualRiskRange(resultText, risk)
+      if (!range) return
+      textarea.focus()
+      textarea.setSelectionRange(range.start, range.end)
+      requestAnimationFrame(() => scrollTextareaToSelection(textarea))
+    },
+    [resultText],
+  )
 
   const enabledCount = useMemo(
     () =>
@@ -364,9 +427,12 @@ export default function App() {
         </label>
         <p className="result-trial-warning" role="note">
           Проверьте результат вручную перед передачей документа. Это пробная версия: возможны
-          пропуски и ложные срабатывания.
+          пропуски и ложные срабатывания. Сервис ищет общие типы чувствительных данных.
+          Специальные коды, артикулы, внутренние номера и иные нестандартные обозначения
+          проверьте вручную.
         </p>
         <textarea
+          ref={resultTextareaRef}
           id="result"
           className="textarea textarea--tall"
           value={resultText}
@@ -399,6 +465,14 @@ export default function App() {
           >
             Скачать карту замен .txt
           </button>
+          <button
+            type="button"
+            className="btn btn--outline"
+            onClick={handleCheckResiduals}
+            disabled={!resultText}
+          >
+            Проверить остатки
+          </button>
           <button type="button" className="btn btn--danger" onClick={handleClearAll}>
             Очистить всё
           </button>
@@ -411,6 +485,41 @@ export default function App() {
               ? null
               : ' Отметьте «Заменить» у нужных строк в таблице.'}
           </p>
+        ) : null}
+        {residualRisks !== null ? (
+          <div className="residual-panel" role="region" aria-label="Возможные остаточные данные">
+            <h3 className="residual-panel__title">Возможные остаточные данные</h3>
+            {residualRisks.length === 0 ? (
+              <p className="residual-panel__empty">
+                Явных остаточных данных не найдено. Всё равно проверьте документ вручную.
+              </p>
+            ) : (
+              <>
+                <p className="residual-panel__note">
+                  Найдено {residualRisks.length} подозрительных фрагментов. Это подсказки для
+                  ручной проверки, не автозамена.
+                </p>
+                <ul className="residual-list">
+                  {residualRisks.map((r, i) => (
+                    <li key={`${r.index}-${r.type}-${i}`} className="residual-list__item">
+                      <div className="residual-list__head">
+                        <span className="residual-list__type">{r.type}</span>
+                        <button
+                          type="button"
+                          className="btn btn--ghost residual-list__jump"
+                          onClick={() => handleJumpToResidualRisk(r)}
+                        >
+                          Перейти
+                        </button>
+                      </div>
+                      <code className="residual-list__fragment">{r.fragment}</code>
+                      <span className="residual-list__context">{r.context}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
         ) : null}
       </section>
 
