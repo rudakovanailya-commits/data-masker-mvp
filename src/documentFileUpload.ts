@@ -1,23 +1,32 @@
 import mammoth from 'mammoth'
+import { EMPTY_PDF_ERROR, MAX_PDF_FILE_BYTES, readPdfFile } from './pdfFileUpload'
 
 export const MAX_DOCUMENT_FILE_BYTES = 5 * 1024 * 1024
 
 export const EMPTY_DOCX_ERROR = 'EMPTY_DOCX'
 
-export type DocumentFileKind = 'txt' | 'docx'
+export { EMPTY_PDF_ERROR }
+
+export type DocumentFileKind = 'txt' | 'docx' | 'pdf'
 
 export function getDocumentFileKind(file: File): DocumentFileKind | null {
   if (/\.txt$/iu.test(file.name)) return 'txt'
   if (/\.docx$/iu.test(file.name)) return 'docx'
+  if (/\.pdf$/iu.test(file.name)) return 'pdf'
   return null
+}
+
+function getMaxBytesForKind(kind: DocumentFileKind): number {
+  return kind === 'pdf' ? MAX_PDF_FILE_BYTES : MAX_DOCUMENT_FILE_BYTES
 }
 
 /** Сообщение об ошибке или null, если файл подходит */
 export function validateDocumentFile(file: File): string | null {
-  if (!getDocumentFileKind(file)) {
-    return 'Пока поддерживаются только .txt и .docx файлы.'
+  const kind = getDocumentFileKind(file)
+  if (!kind) {
+    return 'Пока поддерживаются только .txt, .docx и .pdf файлы.'
   }
-  if (file.size > MAX_DOCUMENT_FILE_BYTES) {
+  if (file.size > getMaxBytesForKind(kind)) {
     return 'Файл слишком большой для пробной версии. Попробуйте вставить фрагмент текста.'
   }
   return null
@@ -63,10 +72,11 @@ export async function readDocxFile(file: File): Promise<string> {
   return normalizeExtractedDocumentText(result.value)
 }
 
-/** Универсальное чтение .txt / .docx */
+/** Универсальное чтение .txt / .docx / .pdf */
 export async function readTextFromFile(file: File): Promise<string> {
   const kind = getDocumentFileKind(file)
   if (kind === 'txt') return readTxtFile(file)
   if (kind === 'docx') return readDocxFile(file)
+  if (kind === 'pdf') return readPdfFile(file)
   throw new Error('UNSUPPORTED_FILE')
 }

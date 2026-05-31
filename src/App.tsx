@@ -13,6 +13,7 @@ import { downloadReplacementMap } from './replacementMap'
 import { isAllowedHostname } from './trustConfig'
 import {
   EMPTY_DOCX_ERROR,
+  EMPTY_PDF_ERROR,
   readTextFromFile,
   validateDocumentFile,
 } from './documentFileUpload'
@@ -212,6 +213,10 @@ export default function App() {
           setSourceFileHint(
             'Не удалось извлечь текст из .docx. Возможно, документ содержит только скан или изображение.',
           )
+        } else if (err instanceof Error && err.message === EMPTY_PDF_ERROR) {
+          setSourceFileHint(
+            'Не удалось извлечь текст из PDF. Возможно, это скан или изображение.',
+          )
         } else {
           setSourceFileHint('Не удалось прочитать файл.')
         }
@@ -303,7 +308,7 @@ export default function App() {
               ref={documentFileInputRef}
               type="file"
               className="source-upload__input"
-              accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              accept=".txt,.docx,.pdf,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
               onChange={handleDocumentFileChange}
               tabIndex={-1}
               aria-hidden
@@ -314,7 +319,7 @@ export default function App() {
                 className="btn btn--outline source-upload__btn"
                 onClick={handleDocumentFilePick}
               >
-                Загрузить .txt / .docx
+                Загрузить .txt / .docx / .pdf
               </button>
               <button
                 type="button"
@@ -329,10 +334,15 @@ export default function App() {
               Файл читается локально в браузере.
             </p>
             <details className="source-upload__docx-details">
-              <summary className="source-upload__docx-summary">Ограничения .docx</summary>
+              <summary className="source-upload__docx-summary">Ограничения загрузки</summary>
               <p className="source-upload__docx-body">
                 Для .docx извлекается основной текст документа. Колонтитулы, текстовые
                 поля, изображения и сканы могут не распознаться. Проверьте результат
+                вручную.
+              </p>
+              <p className="source-upload__docx-body">
+                Для .pdf извлекается только текстовый слой. Сканированные документы,
+                изображения и подписи-картинки могут не распознаться. Проверьте результат
                 вручную.
               </p>
             </details>

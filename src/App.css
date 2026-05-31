@@ -389,6 +389,10 @@
   max-width: 20rem;
 }
 
+.source-upload__docx-body + .source-upload__docx-body {
+  margin-top: 0.5rem;
+}
+
 .source-upload__hint {
   margin: 0 0 0.65rem;
   font-size: 0.875rem;
