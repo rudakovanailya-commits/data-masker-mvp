@@ -52,6 +52,9 @@ export type PlaceholderTag =
   | 'ПАСПОРТНЫЕ_ДАННЫЕ'
   | 'СНИЛС'
   | 'НОМЕР_ДОГОВОРА'
+  | 'СЕРИЯ_ДОКУМЕНТА'
+  | 'НОМЕР_ДОКУМЕНТА'
+  | 'РЕГИСТРАЦИОННЫЙ_НОМЕР'
   | 'НОМЕР_ПРИЛОЖЕНИЯ'
   | 'VIN'
   | 'ГОСНОМЕР'
@@ -167,6 +170,15 @@ function normalizeOrgNameKey(value: string): string {
   const enQuoted = compact.match(/"(?:[^"]+|"[^"]+)"/u)
   if (enQuoted) return `n:${normalizeOrgInnerNameToken(enQuoted[0])}`
 
+  const ruOpenQuoted = compact.match(/«[^»,;]+/u)
+  if (ruOpenQuoted) return `n:${normalizeOrgInnerNameToken(ruOpenQuoted[0])}`
+
+  const deOpenQuoted = compact.match(/„[^"„»;,]+/u)
+  if (deOpenQuoted) return `n:${normalizeOrgInnerNameToken(deOpenQuoted[0])}`
+
+  const enOpenQuoted = compact.match(/"[^";,]+/u)
+  if (enOpenQuoted) return `n:${normalizeOrgInnerNameToken(enOpenQuoted[0])}`
+
   const stripped = stripOrgLegalFormPrefix(
     compact.toLowerCase().replace(/ё/g, 'е').replace(/[«»""„]/g, ''),
   )
@@ -207,6 +219,15 @@ function normalizeEntityKey(m: RawMatch): string {
       return normalizeDocumentDateKey(m.value)
     case 'snils':
       return normalizeDigitsKey(m.value)
+    case 'contract_number':
+      if (m.placeholderTag === 'НОМЕР_ДОКУМЕНТА') return normalizeDigitsKey(m.value)
+      if (m.placeholderTag === 'СЕРИЯ_ДОКУМЕНТА') {
+        return normalizeForKey(m.value).replace(/[\s\-–]/gu, '').toLowerCase()
+      }
+      if (m.placeholderTag === 'РЕГИСТРАЦИОННЫЙ_НОМЕР') {
+        return normalizeForKey(m.value).replace(/[\s\-–]/gu, '').toLowerCase()
+      }
+      return normalizeForKey(m.value)
     default:
       return normalizeForKey(m.value)
   }
@@ -262,7 +283,18 @@ function extractVinPayload(value: string): string | null {
   return m?.[1] ?? null
 }
 
+/** VIN/кузов по метке: 10–25 символов, допускаются пробелы/дефисы OCR */
+function parseLabeledVinValue(raw: string): string | null {
+  const compact = raw.replace(/[\s\-–]/g, '').toUpperCase()
+  if (compact.length < 10 || compact.length > 25) return null
+  if (!/^[A-Z0-9]+$/.test(compact)) return null
+  if (/^\d+$/.test(compact)) return null
+  return compact
+}
+
 function normalizeVinKey(value: string): string {
+  const labeled = parseLabeledVinValue(value)
+  if (labeled) return labeled
   const payload = extractVinPayload(value)
   return payload ? payload.toUpperCase() : normalizeForKey(value)
 }
@@ -300,6 +332,33 @@ function isValidPtsNumber(value: string): boolean {
 
 function normalizeDocumentDateKey(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase().replace(/ё/g, 'е')
+}
+
+function isValidCadastralNumber(value: string): boolean {
+  const parts = value.trim().split(':')
+  if (parts.length < 4 || parts.length > 5) return false
+  if (!parts.every((part) => /^\d{1,7}$/u.test(part))) return false
+  if (parts.length === 3 && parts.every((part) => part.length <= 2)) return false
+  return true
+}
+
+function mapCadastralNumberMatch(
+  m: RegExpMatchArray,
+  strictOnly = false,
+): Omit<RawMatch, 'priority' | 'categoryId'> & { categoryId: CategoryId; priority: number } | null {
+  const payload = (m[1] ?? m[0] ?? '').trim()
+  if (!payload || !isValidCadastralNumber(payload)) return null
+  const start = m.index! + m[0].indexOf(payload)
+  const end = start + payload.length
+  return {
+    start,
+    end,
+    value: payload,
+    categoryId: 'cadastre' as const,
+    placeholderTag: 'КАДАСТРОВЫЙ_НОМЕР' as const,
+    typeLabel: strictOnly ? 'Кадастровый номер (метка)' : 'Кадастровый номер',
+    priority: strictOnly ? 101 : 100,
+  }
 }
 
 /** Токен сразу после последнего знака номера (№ / U+2116) в совпадении */
@@ -349,6 +408,35 @@ function isValidContractNumberToken(tok: string): boolean {
   if (/^\d+$/u.test(t) && digits >= 2) return true
   if (digits >= 3) return true
   if (digits >= 1 && letters >= 1 && core.length >= 4) return true
+  return false
+}
+
+/** Контекст свидетельства о государственной регистрации права */
+const REG_RIGHT_DOC_CTX_RE =
+  /(?:свидетельств[ао][^\n]{0,140}?(?:государственн(?:ой|ая)\s+регистрац(?:ии|ией)\s+права|гос\.\s*рег)|государственн(?:ой|ая)\s+регистрац(?:ии|ией)\s+права|регистрац(?:ии|ией)\s+права(?:\s+собственности)?)/iu
+
+function hasRegistrationRightDocContext(text: string, start: number, window = 320): boolean {
+  return REG_RIGHT_DOC_CTX_RE.test(text.slice(Math.max(0, start - window), start))
+}
+
+function isValidDocumentSeries(value: string): boolean {
+  const v = value.trim()
+  if (v.length < 3 || v.length > 12) return false
+  return /^\d{2}[\s\-–]?[A-Za-zА-ЯЁа-яё]{1,4}$/u.test(v)
+}
+
+function isValidCertificateDocNumber(value: string): boolean {
+  const v = value.trim()
+  return /^\d{4,12}$/u.test(v)
+}
+
+function isValidPropertyRegistrationNumber(value: string): boolean {
+  const v = value.trim()
+  if (v.length < 8 || v.length > 48) return false
+  const core = v.replace(/\s+\d+(?:\.\d+)?$/u, '').trim()
+  if (isValidCadastralNumber(core)) return false
+  if (/^\d{2}[\-–]\d{2}[\-–]\d[\d/\-–.]*$/u.test(core)) return true
+  if (/^\d{2}:\d{2}:\d{4,7}:\d+[\-/][\d/\-–]+$/u.test(core)) return true
   return false
 }
 
@@ -461,12 +549,15 @@ function trimAddressCandidate(value: string): string {
   const stopRe =
     /(?:,\s*единственный\s+участник|\s+единственный\s+участник|\s*\(далее|\s+руководствуясь|\s+принял\s+следующие\s+решения|(?:^|[\s,;])Подпись\b|\n+\s*\d+\.\s|,\s*Обществ[ао]\s+с\s+ограниченной|\b1\.\s*Изменить|\b2\.\s*Зарегистрировать)/giu
 
+  const cadastreInlineStopRe =
+    /(?:^|[\s,;(\n])кадастров(?:ый|ого)\s+номер\s*:?(?=$|[^\p{L}\p{N}_])/giu
+
   const bankInlineStopRe =
     /(?:^|[\s,;(\n])(?:р\/\s*с|р\.с\.|расч(?:ёт|ет)ный(?:\s+|\s*\n\s*)сч(?:ёт|ет)|расчетный(?:\s+|\s*\n\s*)счет|расч(?:ёт|ет)ный|расчетный|к\/\s*с|корр(?:\.|\/)?\s*с|бик|банк|инн|кпп|огрн(?:ип)?|в\s+[^\n]{0,72}?(?:банке|филиале))(?=$|[^\p{L}\p{N}_])/giu
 
   let stopAt = v.length
   let sm: RegExpExecArray | null
-  for (const re of [stopRe, bankInlineStopRe]) {
+  for (const re of [stopRe, cadastreInlineStopRe, bankInlineStopRe]) {
     re.lastIndex = 0
     while ((sm = re.exec(v)) !== null) {
       const at = sm.index + (sm[0].length - sm[0].trimStart().length)
@@ -477,7 +568,7 @@ function trimAddressCandidate(value: string): string {
   const head = v.slice(0, stopAt)
 
   const unitRe =
-    /(?:кв\.|квартира|помещение|помещ\.|оф\.|офис|пом\.)\s*(?:№\s*)?[\d\-/]+|(?:литера|лит\.)\s*[А-ЯЁA-Z\d]+|(?:этаж|Этаж)\s*[\d\-/]+/giu
+    /(?:кв\.|квартира|помещение|помещ\.|оф\.|офис|пом\.)\s*(?:№\s*)?[\d\-/]+|(?:литера|лит\.)\s*[А-ЯЁA-Z\d]+|(?:корпус|корп\.|к\.)\s*[\d\-/]+|(?:этаж|Этаж)\s*[\d\-/]+/giu
   let unitEnd = -1
   unitRe.lastIndex = 0
   while ((sm = unitRe.exec(head)) !== null) {
@@ -531,7 +622,7 @@ function isValidAddressCandidate(value: string): boolean {
   // у настоящего адреса должны быть признаки адреса
   const hasAddressMarkers =
     /\b\d{6}\b/u.test(v) ||
-    /\b(?:г\.|город|ул\.|улица|наб\.|набережная|проспект|пр\.|пр-кт|д\.|дом|корп\.|к\.|кв\.|оф\.|офис|пом\.|помещение|лит\.|литера|а\/я|обл\.|область|санкт[\s-]?петербург|санктпетербург|москва)\b/iu.test(
+    /\b(?:г\.|город|ул\.|улица|наб\.|набережная|проспект|пр\.|пр-кт|д\.|дом|корп\.|корпус|к\.|кв\.|оф\.|офис|пом\.|помещение|лит\.|литера|а\/я|обл\.|область|санкт[\s-]?петербург|санктпетербург|москва)\b/iu.test(
       v,
     )
 
@@ -544,7 +635,7 @@ function isValidAddressCandidate(value: string): boolean {
 
 /** Метки явного адреса (длинные ветки раньше короткой «Адрес») */
 const LABELED_ADDRESS_LABEL_RE =
-  /(?:Юридический\s+адрес|Почтовый\s+адрес|Адрес\s+места\s+нахождения|Адрес\s+регистрации|Место\s+нахождения|Место\s+регистрации|Место\s+жительства|зарегистрирован\s+по\s+адресу)\s*:?\s*|Адрес\s*:\s*/giu
+  /(?:Юридический\s+адрес|Почтовый\s+адрес|Адрес\s+места\s+нахождения|Адрес\s+регистрации|Место\s+нахождения|Место\s+регистрации|Место\s+жительства|зарегистрирован\s+по\s+адресу|(?:расположен(?:ного|ная|ное|ной)(?:[\s\n]+)по(?:[\s\n]+))?адресу)\s*:?\s*|Адрес\s*:\s*/giu
 
 /** Без /g — не трогает lastIndex глобального LABELED_ADDRESS_LABEL_RE при exec по срезу */
 const LABELED_ADDRESS_LABEL_ANCHOR_RE = new RegExp(LABELED_ADDRESS_LABEL_RE.source, 'iu')
@@ -567,10 +658,10 @@ function isBankRequisiteLineStart(line: string): boolean {
 
 /** Новая строка реквизитов / следующего блока — конец многострочного адреса */
 const LABELED_ADDRESS_LINE_STOP_RE =
-  /^(?:ИНН|КПП|ОГРН(?:ИП)?|БИК|Расчётный|Расчетный|Расчётный\s+счёт|Расчетный\s+счет|счёт\s*:|счет\s*:|Р\/\s*с|р\/\s*с|к\/\s*с|Корр|корр|Банк|Телефон|Email|E-mail|Директор|Генеральный\s+директор|Подпись|Покупатель|Продавец|Исполнитель|Заказчик)\b/iu
+  /^(?:ИНН|КПП|ОГРН(?:ИП)?|БИК|Расчётный|Расчетный|Расчётный\s+счёт|Расчетный\s+счет|счёт\s*:|счет\s*:|Р\/\s*с|р\/\s*с|к\/\s*с|Корр|корр|Банк|Телефон|Email|E-mail|Директор|Генеральный\s+директор|Подпись|Покупатель|Продавец|Исполнитель|Заказчик|Кадастров(?:ый|ого)\s+номер)\b/iu
 
 const ADDRESS_CONTINUATION_MARKERS_RE =
-  /(?:\d{6}|г\.|город|ул\.|улица|наб\.|набережная|проспект|пр\.|пр-кт|просп\.?|пер\.|переулок|б-р|бульвар|ш\.|шоссе|д\.|дом|лит\.|литера|литер|пом\.|помещение|офис|кв\.|квартира|а\/я|российская|республика|респ\.|санкт|петербург|санктпетербург|москва|обл\.|область|край)/iu
+  /(?:\d{6}|г\.|город|ул\.|улица|наб\.|набережная|проспект|пр\.|пр-кт|просп\.?|пер\.|переулок|б-р|бульвар|ш\.|шоссе|д\.|дом|лит\.|литера|литер|корпус|корп\.|к\.|пом\.|помещение|офис|кв\.|квартира|а\/я|российская|республика|респ\.|санкт|петербург|санктпетербург|москва|обл\.|область|край)/iu
 
 /** Улица/набережная в шапке без метки «Адрес:» */
 const UNLABELED_ADDR_STREET_RE =
@@ -692,12 +783,12 @@ function normalizeAddressLineRaw(line: string): string {
 
 /** Обрезка строки адреса перед встроенным банковским реквизитом */
 function addressLineEndBeforeInlineBank(line: string): number {
-  const bankInlineStopRe =
-    /(?:^|[\s,;(\n])(?:р\/\s*с|р\.с\.|расч(?:ёт|ет)ный(?:\s+|\s*\n\s*)сч(?:ёт|ет)|расчетный(?:\s+|\s*\n\s*)счет|расч(?:ёт|ет)ный|расчетный|к\/\s*с|корр(?:\.|\/)?\s*с|корр(?:еспондентский)?\s+сч(?:ёт|ет)?|бик|банк|инн|кпп|огрн(?:ип)?)(?=$|[^\p{L}\p{N}_])/giu
+  const inlineStopRe =
+    /(?:^|[\s,;(\n])(?:р\/\s*с|р\.с\.|расч(?:ёт|ет)ный(?:\s+|\s*\n\s*)сч(?:ёт|ет)|расчетный(?:\s+|\s*\n\s*)счет|расч(?:ёт|ет)ный|расчетный|к\/\s*с|корр(?:\.|\/)?\s*с|корр(?:еспондентский)?\s+сч(?:ёт|ет)?|бик|банк|инн|кпп|огрн(?:ип)?|кадастров(?:ый|ого)\s+номер\s*:?)(?=$|[^\p{L}\p{N}_])/giu
   let stopAt = line.length
   let sm: RegExpExecArray | null
-  bankInlineStopRe.lastIndex = 0
-  while ((sm = bankInlineStopRe.exec(line)) !== null) {
+  inlineStopRe.lastIndex = 0
+  while ((sm = inlineStopRe.exec(line)) !== null) {
     const at = sm.index + (sm[0].length - sm[0].trimStart().length)
     if (at >= 0 && at < stopAt) stopAt = at
   }
@@ -836,6 +927,27 @@ function isOrgMatchOnBankLine(text: string, start: number): boolean {
 function isOrgAfterVBankePrefix(text: string, start: number): boolean {
   const before = text.slice(Math.max(0, start - 32), start)
   return /(?:^|[^\p{L}\p{N}_])в\s+банке\s*$/iu.test(before)
+}
+
+function trimOrgLegalFormTail(value: string): string {
+  return value
+    .replace(
+      /\s+(?:договор(?:у|а|е|ом)?|далее|именуем(?:ое|ый|ая|ые)?|в\s+лице|утвержденн(?:ым|ый)|при)\s*$/iu,
+      '',
+    )
+    .trimEnd()
+}
+
+function finalizeLegalFormOrgMatch(
+  start: number,
+  _end: number,
+  value: string,
+  maxLen: number,
+  minLen = 5,
+): { start: number; end: number; value: string } | null {
+  const trimmed = trimOrgLegalFormTail(value)
+  if (trimmed.length < minLen || trimmed.length > maxLen) return null
+  return { start, end: start + trimmed.length, value: trimmed }
 }
 
 const GOV_ORG_MAX_LEN = 140
@@ -1456,6 +1568,108 @@ function isLikelyPoaFio(words: string[]): boolean {
   return true
 }
 
+/** OCR-tolerant слово ФИО: кириллица и/или латиница */
+function isLikelyDirectorContextFioWord(w: string): boolean {
+  if (w.length < 2 || w.length > 32) return false
+  if (/\d/.test(w)) return false
+  if (!/[A-Za-zА-ЯЁа-яё]/u.test(w)) return false
+  const low = w.toLowerCase()
+  if (FIO_BLOCKLIST.has(low) || FIO_PREPOSITION_WORDS.has(low)) return false
+  if (POA_FIO_EXTRA_BLOCKLIST.has(low)) return false
+  if (isFioPartyRoleWord(w)) return false
+  return true
+}
+
+function isLikelyDirectorContextFio(words: string[]): boolean {
+  if (words.length < 2 || words.length > 3) return false
+  return words.every(isLikelyDirectorContextFioWord)
+}
+
+function isLikelyIpEntrepreneurFioWord(w: string): boolean {
+  if (w.length < 2 || w.length > 32) return false
+  if (/\d/.test(w)) return false
+  if (!/^[А-ЯЁ][а-яё]+$/u.test(w)) return false
+  const low = w.toLowerCase()
+  if (FIO_BLOCKLIST.has(low) || FIO_PREPOSITION_WORDS.has(low)) return false
+  if (isFioPartyRoleWord(w)) return false
+  return true
+}
+
+function isLikelyIpEntrepreneurFio(words: string[]): boolean {
+  if (words.length < 2 || words.length > 3) return false
+  return words.every(isLikelyIpEntrepreneurFioWord)
+}
+
+function mapDirectorContextFioMatch(
+  text: string,
+  m: RegExpMatchArray,
+): Omit<RawMatch, 'priority' | 'categoryId'> & { categoryId: CategoryId; priority: number } | null {
+  const rawInner = m[1] ?? ''
+  const trimmed = rawInner.trim()
+  const words = trimmed.replace(/\s+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  if (!isLikelyDirectorContextFio(words)) return null
+  const start = m.index! + m[0].indexOf(trimmed)
+  const end = start + trimmed.length
+  const value = text.slice(start, end)
+  if (isFioOnAppendixFormLine(text, start)) return null
+  if (isFalseFioNearAppendixNumber(text, start, end)) return null
+  if (isFalseFioSealOrPartyRole(text, start, end, value.replace(/\s+/g, ' ').trim())) return null
+  return {
+    start,
+    end,
+    value,
+    categoryId: 'fio' as const,
+    placeholderTag: 'ФИО' as const,
+    typeLabel: 'ФИО (директор)',
+    priority: 57,
+  }
+}
+
+function mapIpEntrepreneurFioMatch(
+  text: string,
+  m: RegExpMatchArray,
+): Omit<RawMatch, 'priority' | 'categoryId'> & { categoryId: CategoryId; priority: number } | null {
+  const rawInner = m[1] ?? ''
+  const trimmed = rawInner.trim()
+  const words = trimmed.replace(/\s*[—\-]\s*/g, ' ').replace(/\s+/g, ' ').trim().split(/\s+/).filter(Boolean)
+  if (!isLikelyIpEntrepreneurFio(words)) return null
+  const start = m.index! + m[0].indexOf(trimmed)
+  const end = start + trimmed.length
+  const value = text.slice(start, end)
+  if (isFioOnAppendixFormLine(text, start)) return null
+  if (isFalseFioNearAppendixNumber(text, start, end)) return null
+  return {
+    start,
+    end,
+    value,
+    categoryId: 'fio' as const,
+    placeholderTag: 'ФИО' as const,
+    typeLabel: 'ФИО (ИП)',
+    priority: 56,
+  }
+}
+
+function mapLabeledVinMatch(
+  m: RegExpMatchArray,
+  strictOnly = false,
+): Omit<RawMatch, 'priority' | 'categoryId'> & { categoryId: CategoryId; priority: number } | null {
+  const payload = (m[1] ?? '').trim()
+  if (!payload) return null
+  const parsed = strictOnly ? extractVinPayload(payload) : parseLabeledVinValue(payload) ?? extractVinPayload(payload)
+  if (!parsed) return null
+  const start = m.index! + m[0].indexOf(payload)
+  const end = start + payload.length
+  return {
+    start,
+    end,
+    value: payload,
+    categoryId: 'vin' as const,
+    placeholderTag: 'VIN' as const,
+    typeLabel: 'VIN / номер кузова' as const,
+    priority: 64,
+  }
+}
+
 function mapPoaAuthorizedFioMatch(
   text: string,
   m: RegExpMatchArray,
@@ -1502,9 +1716,22 @@ function mergeOverlapping(raw: RawMatch[]): RawMatch[] {
   return out
 }
 
-function assignPlaceholders(matches: RawMatch[]): FoundEntity[] {
+function seedPlaceholderCountersFromText(
+  text: string,
+  nextByTag: Map<PlaceholderTag, number>,
+): void {
+  for (const m of text.matchAll(/\[([A-ZА-ЯЁ_]+)_(\d+)\]/gu)) {
+    const tag = m[1] as PlaceholderTag
+    const n = Number(m[2])
+    if (!Number.isFinite(n) || n < 1) continue
+    nextByTag.set(tag, Math.max(nextByTag.get(tag) ?? 0, n))
+  }
+}
+
+function assignPlaceholders(matches: RawMatch[], sourceText = ''): FoundEntity[] {
   const keyToPlaceholder = new Map<string, string>()
   const nextByTag = new Map<PlaceholderTag, number>()
+  seedPlaceholderCountersFromText(sourceText, nextByTag)
 
   return matches.map((m) => {
     const keyPart = normalizeEntityKey(m)
@@ -1557,19 +1784,17 @@ export function findSensitiveEntities(
   const raw: RawMatch[] = []
 
   if (enabled.has('cadastre')) {
+    const cadastralValue = '(\\d{2}:\\d{2}:\\d+(?::\\d+){1,2})'
     raw.push(
       ...collectRegexMatches(
         text,
-        /\b\d{2}:\d{2}:\d{6,7}:\d{2,}\b/gi,
-        (m) => ({
-          start: m.index!,
-          end: m.index! + m[0].length,
-          value: m[0],
-          categoryId: 'cadastre' as const,
-          placeholderTag: 'КАДАСТРОВЫЙ_НОМЕР' as const,
-          typeLabel: 'Кадастровый номер',
-          priority: 100,
-        }),
+        new RegExp(`кадастров(?:ый|ого)\\s+номер\\s*:?\\s*${cadastralValue}`, 'giu'),
+        (m) => mapCadastralNumberMatch(m, true),
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(text, /\b(\d{2}:\d{2}:\d+(?::\d+){1,2})\b/giu, (m) =>
+        mapCadastralNumberMatch(m, false),
       ),
     )
   }
@@ -1854,16 +2079,62 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('org_ip')) {
+    const ORG_LEGAL_FORM_MAX_LEN = 80
+    const ORG_FULL_FORM_MAX_LEN = 280
     /** После закрывающей кавычки имени — пробел/пунктуация/конец (имя уже ограничено «…») */
     const orgStopQuoted =
-      '(?=\\s|,|;|\\.|\\n|\\)|\\]|\\s*\\(|\\s+именуем(?:ое|ый|ая|ые)?(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+лице(?=$|[^\\p{L}\\p{N}_])|\\s+договор(?:у|а|е|ом)?(?=$|[^\\p{L}\\p{N}_])|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)(?=$|[^\\p{L}\\p{N}_])|\\s+адрес\\b|\\s+юридический\\b|$)'
+      '(?=\\s|,|;|\\.|\\n|\\)|\\]|\\s*\\(|\\s+далее(?=$|[^\\p{L}\\p{N}_])|\\s+именуем(?:ое|ый|ая|ые)?(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+лице(?=$|[^\\p{L}\\p{N}_])|\\s+при(?=$|[^\\p{L}\\p{N}_])|\\s+утвержденн(?:ым|ый)(?=$|[^\\p{L}\\p{N}_])|\\s+договор(?:у|а|е|ом)?(?=$|[^\\p{L}\\p{N}_])|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)(?=$|[^\\p{L}\\p{N}_])|\\s+адрес\\b|\\s+адресу\\b|\\s+расположен|\\s+юридический\\b|$)'
+    const orgFullStopQuoted =
+      '(?=\\s|,|;|\\.|\\n|\\)|\\]|\\s*\\(|\\s+далее(?=$|[^\\p{L}\\p{N}_])|\\s+именуем(?:ое|ый|ая|ые)?(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+лице(?=$|[^\\p{L}\\p{N}_])|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)(?=$|[^\\p{L}\\p{N}_])|\\s+адрес\\b|\\s+адресу\\b|\\s+расположен|\\s+\\[\\s*(?:ОРГАНИЗАЦИЯ|ИП)_|$)'
     /** Без кавычек — строже: предлоги, следующее юрлицо, реквизиты */
     const orgStop =
-      '(?=,|;|\\.|\\n|\\s*\\(|\\s+[А-ЯЁ]\\.|\\s+(?:в|для|по|на|к|у|о|об|от|с|и)(?=$|[^\\p{L}\\p{N}_])|\\s+именуем(?:ое|ый|ая|ые)?(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+лице(?=$|[^\\p{L}\\p{N}_])|\\s+договор(?:у|а|е|ом)?(?=$|[^\\p{L}\\p{N}_])|\\s+(?:с|и|между)\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)(?=$|[^\\p{L}\\p{N}_])|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)(?=$|[^\\p{L}\\p{N}_])|\\s+адрес\\b|\\s+юридический\\b|\\s+г\\.\\s|\\s+город\\b|\\s+ул\\.\\s|\\s+улица\\b|\\s+р\\/\\s*с\\b|\\s+р\\.с\\.|\\s+к\\/\\s*с\\b|\\s+БИК(?=$|[^\\p{L}\\p{N}_])|\\s+[Бб]анк\\b|$)'
+      '(?=,|;|\\.|\\n|\\s*\\(|\\s+далее(?=$|[^\\p{L}\\p{N}_])|\\s+[А-ЯЁ]\\.|\\s+(?:в|для|по|на|к|у|о|об|от|с|и)(?=$|[^\\p{L}\\p{N}_])|\\s+именуем(?:ое|ый|ая|ые)?(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+лице(?=$|[^\\p{L}\\p{N}_])|\\s+при(?=$|[^\\p{L}\\p{N}_])|\\s+утвержденн(?:ым|ый)(?=$|[^\\p{L}\\p{N}_])|\\s+договор(?:у|а|е|ом)?(?=$|[^\\p{L}\\p{N}_])|\\s+(?:с|и|между)\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)(?=$|[^\\p{L}\\p{N}_])|\\s+в\\s+(?:ООО|АО|ПАО|ЗАО|ОАО|НКО)(?=$|[^\\p{L}\\p{N}_])|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН)(?=$|[^\\p{L}\\p{N}_])|\\s+адрес\\b|\\s+юридический\\b|\\s+г\\.\\s|\\s+город\\b|\\s+ул\\.\\s|\\s+улица\\b|\\s+р\\/\\s*с\\b|\\s+р\\.с\\.|\\s+к\\/\\s*с\\b|\\s+БИК(?=$|[^\\p{L}\\p{N}_])|\\s+[Бб]анк\\b|$)'
 
-    // «…»: вложенные « в имени до первого » (линейно). "…": ветка на 2 или 3 кавычки, без (A|B)+
-    const orgQuotedRu = '«[^»\\n]{1,160}»'
-    const orgQuotedEn = '"(?:[^"\\n]{1,160}"[^"\\n]{1,80}|[^"\\n]{1,160})"'
+    // «…»: вложенные « и переносы строк OCR внутри кавычек
+    const orgQuotedRu = '«[^»]{0,70}(?:«[^»]{0,70})?»'
+    const orgQuotedRuFull = '«[^»]{0,220}»'
+    const orgQuotedEn = '"(?:[^"]{1,70}"[^"]{1,40}|[^"]{1,70})"'
+    const orgQuotedEnFull = '"(?:[^"]{1,220}"[^"]{1,80}|[^"]{1,220})"'
+    /** OCR: открывающая кавычка без закрывающей — имя до , ; \\n или стоп-слова */
+    const orgQuotedRuOpen = '«[^»,;\\n]{1,60}(?![»])'
+    const orgQuotedEnOpen = '"(?:[^";\\n,]{1,60})(?!["])'
+    const orgQuotedDeOpen = '„[^"„»;\\n,]{1,60}'
+    const fullLegalFormPrefix =
+      '(?:Открытое\\s+акционерное\\s+общество|Закрытое\\s+акционерное\\s+общество|Акционерное\\s+общество|Федеральное\\s+государственное\\s+унитарное\\s+предприятие|Федеральное\\s+государственное\\s+учреждение|ФГУП|ФГБУ|ФГУН)'
+
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(
+          `${fullLegalFormPrefix}[\\s\\n]*(?:${orgQuotedRuFull}|${orgQuotedEnFull})${orgFullStopQuoted}`,
+          'giu',
+        ),
+        (m) => {
+          if (isOrgMatchOnBankLine(text, m.index!)) return null
+          if (isOrgAfterVBankePrefix(text, m.index!)) return null
+          const r = trimMatchRange(m[0], m.index!)
+          if (!r) return null
+          const finalized = finalizeLegalFormOrgMatch(
+            r.start,
+            r.end,
+            r.value,
+            ORG_FULL_FORM_MAX_LEN,
+            12,
+          )
+          if (!finalized) return null
+          if (isOrgInContractTitleContext(text, finalized.start, finalized.value)) return null
+          return {
+            start: finalized.start,
+            end: finalized.end,
+            value: finalized.value,
+            categoryId: 'org_ip' as const,
+            placeholderTag: 'ОРГАНИЗАЦИЯ' as const,
+            typeLabel: 'Организация (полная форма)',
+            priority: 61,
+          }
+        },
+      ),
+    )
 
     raw.push(
       ...collectRegexMatches(
@@ -1871,23 +2142,31 @@ export function findSensitiveEntities(
         new RegExp(
           '(?:Обществ[ао]|ОБЩЕСТВ[АО])\\s+с\\s+ограниченной\\s+ответственностью\\s*' +
             '(?:' +
-            orgQuotedRu +
+            orgQuotedRuFull +
             '|' +
-            orgQuotedEn +
+            orgQuotedEnFull +
             ')' +
-            orgStopQuoted,
+            orgFullStopQuoted,
           'giu',
         ),
         (m) => {
           if (isOrgMatchOnBankLine(text, m.index!)) return null
           if (isOrgAfterVBankePrefix(text, m.index!)) return null
           const r = trimMatchRange(m[0], m.index!)
-          if (!r || r.value.length < 12) return null
-          if (isOrgInContractTitleContext(text, r.start, r.value)) return null
+          if (!r) return null
+          const finalized = finalizeLegalFormOrgMatch(
+            r.start,
+            r.end,
+            r.value,
+            ORG_FULL_FORM_MAX_LEN,
+            12,
+          )
+          if (!finalized) return null
+          if (isOrgInContractTitleContext(text, finalized.start, finalized.value)) return null
           return {
-            start: r.start,
-            end: r.end,
-            value: r.value,
+            start: finalized.start,
+            end: finalized.end,
+            value: finalized.value,
             categoryId: 'org_ip' as const,
             placeholderTag: 'ОРГАНИЗАЦИЯ' as const,
             typeLabel: 'Организация (ООО полное)',
@@ -1909,8 +2188,17 @@ export function findSensitiveEntities(
             orgQuotedEn +
             orgStopQuoted +
             '|' +
+            orgQuotedRuOpen +
+            orgStopQuoted +
+            '|' +
+            orgQuotedEnOpen +
+            orgStopQuoted +
+            '|' +
+            orgQuotedDeOpen +
+            orgStopQuoted +
+            '|' +
             // Без кавычек — короткое имя (как было)
-            '[А-ЯЁA-Zа-яё0-9\\-]+(?:\\s+[А-ЯЁA-Zа-яё0-9\\-]+){0,4}' +
+            '[А-ЯЁA-Z][А-ЯЁA-Zа-яё0-9\\-]*(?:[\\s\\n]+[А-ЯЁA-Z][А-ЯЁA-Zа-яё0-9\\-]*){0,4}' +
             orgStop +
             ')',
           'giu',
@@ -1919,12 +2207,19 @@ export function findSensitiveEntities(
           if (isOrgMatchOnBankLine(text, m.index!)) return null
           if (isOrgAfterVBankePrefix(text, m.index!)) return null
           const r = trimMatchRange(m[0], m.index!)
-          if (!r || r.value.length < 5) return null
-          if (isOrgInContractTitleContext(text, r.start, r.value)) return null
+          if (!r) return null
+          const finalized = finalizeLegalFormOrgMatch(
+            r.start,
+            r.end,
+            r.value,
+            ORG_LEGAL_FORM_MAX_LEN,
+          )
+          if (!finalized) return null
+          if (isOrgInContractTitleContext(text, finalized.start, finalized.value)) return null
           return {
-            start: r.start,
-            end: r.end,
-            value: r.value,
+            start: finalized.start,
+            end: finalized.end,
+            value: finalized.value,
             categoryId: 'org_ip' as const,
             placeholderTag: 'ОРГАНИЗАЦИЯ' as const,
             typeLabel: 'Организация',
@@ -1962,12 +2257,34 @@ export function findSensitiveEntities(
       ),
     )
 
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /ИП\s+([А-ЯЁ][а-яё]{1,28})\s+([А-ЯЁ]\.\s*[А-ЯЁ]\.?)(?=\s*[.,;]|\n|\s+(?:ИНН|КПП|ОГРНИП|ОГРН|адрес)\b|$)/giu,
+        (m) => {
+          if (isOrgMatchOnBankLine(text, m.index!)) return null
+          const inner = (m[0] ?? '').trim()
+          const start = m.index! + m[0].indexOf('ИП')
+          const end = start + inner.length
+          return {
+            start,
+            end,
+            value: inner,
+            categoryId: 'org_ip' as const,
+            placeholderTag: 'ИП' as const,
+            typeLabel: 'ИП',
+            priority: 56,
+          }
+        },
+      ),
+    )
+
     raw.push(...collectGovernmentOrgMatches(text))
 
     raw.push(
       ...collectRegexMatches(
         text,
-        /(?:^|[\s(])(?:\d+\.\s*)?Работник\s+принимается\s+на\s+работу\s*:\s*((?:ООО|АО|ПАО|ЗАО|ОАО|НКО|ИП)\s+(?:«[^»\n]{1,160}»|"(?:[^"\n]{1,160})"|(?:[А-ЯЁA-Z][А-ЯЁA-Zа-яё0-9\-]+(?:\s+[А-ЯЁA-Z][А-ЯЁA-Zа-яё0-9\-]+){0,3})))(?=\s*$|[\s,;.(]|$)/giu,
+        /(?:^|[\s(])(?:\d+\.\s*)?Работник\s+принимается\s+на\s+работу\s*:\s*((?:ООО|АО|ПАО|ЗАО|ОАО|НКО|ИП)\s+(?:«[^»]{0,70}(?:«[^»]{0,70})?»|"(?:[^"]{1,70}"[^"]{1,40}|[^"]{1,70})"|(?:[А-ЯЁA-Z][А-ЯЁA-Zа-яё0-9\-]+(?:[\s\n]+[А-ЯЁA-Z][А-ЯЁA-Zа-яё0-9\-]+){0,3})))(?=\s*$|[\s,;.(]|$)/giu,
         (m) => {
           if (isOrgMatchOnBankLine(text, m.index!)) return null
           if (isOrgAfterVBankePrefix(text, m.index!)) return null
@@ -1991,6 +2308,52 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('fio')) {
+    const ocrFioWord = '[A-Za-zА-ЯЁ][A-Za-zА-ЯЁа-яё]{1,31}'
+    const ocrFioSep = '(?:\\s+|\\s*\\r?\\n\\s*)'
+    const directorCtx =
+      '(?:в\\s+лице\\s+)?(?:Генерального\\s+директора|генерального\\s+директора|директора)\\s+'
+    const directorStop =
+      '(?=\\s*,|\\s*\\r?\\n\\s*[,]|\\s+действующ(?:его|ей|ий|ая)|\\s+на\\s+основании|$)'
+
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(
+          `${directorCtx}(${ocrFioWord}${ocrFioSep}${ocrFioWord}${ocrFioSep}${ocrFioWord})${directorStop}`,
+          'giu',
+        ),
+        (m) => mapDirectorContextFioMatch(text, m),
+      ),
+    )
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(
+          `${directorCtx}(${ocrFioWord}${ocrFioSep}${ocrFioWord})${directorStop}`,
+          'giu',
+        ),
+        (m) => mapDirectorContextFioMatch(text, m),
+      ),
+    )
+
+    const ipEntrepreneurWord = '[А-ЯЁ][а-яё]{1,28}'
+    const ipEntrepreneurSep = '(?:\\s+|\\s*[—\\-]\\s*|\\s*\\r?\\n\\s*)'
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(
+          '(?:Индивидуальный|индивидуальный)' +
+            ipEntrepreneurSep +
+            '(?:предприниматель|ПРЕДПРИНИМАТЕЛЬ)' +
+            ipEntrepreneurSep +
+            `((${ipEntrepreneurWord}(?:${ipEntrepreneurSep}${ipEntrepreneurWord}){1,2}))` +
+            '(?=\\s*[\\(,]|\\s*,|\\s*\\r?\\n|\\s+(?:ИНН|КПП|ОГРНИП|ОГРН|адрес|именуем)\\b|$)',
+          'giu',
+        ),
+        (m) => mapIpEntrepreneurFioMatch(text, m),
+      ),
+    )
+
     const poaFioWord = '[А-ЯЁ][а-яё]{1,28}'
     const poaFioCtx =
       '(?:настоящей\\s+доверенностью\\s+)?уполномочивает\\s*:?\\s*(?:\\r?\\n\\s*)?'
@@ -2355,6 +2718,82 @@ export function findSensitiveEntities(
 
   if (enabled.has('contract_number')) {
     const cnPri = 68
+    const regDocPri = cnPri + 6
+    const regDocLabel = 'Свидетельство / регистрация права' as const
+
+    // Регистрационный номер записи о праве (не кадастр, не номер договора без метки).
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        new RegExp(
+          '(?:регистрационн(?:ый|ого)\\s*(?:№|номер)|рег\\.\\s*(?:№|номер)|запись\\s+регистрации\\s*(?:№|номер))\\s*:?\\s*' +
+            '(\\d{2}[\\-–]\\d{2}[\\-–]\\d+(?:/\\d{4})?(?:\\s+\\d+(?:\\.\\d+)?)?|\\d{2}:\\d{2}:\\d{4,7}:\\d+[\\-/][\\d/\\-–]+)',
+          'giu',
+        ),
+        (m) => {
+          const val = (m[1] ?? '').trim()
+          if (!isValidPropertyRegistrationNumber(val)) return null
+          const start = m.index! + m[0].indexOf(val)
+          const end = start + val.length
+          return {
+            start,
+            end,
+            value: val,
+            categoryId: 'contract_number' as const,
+            placeholderTag: 'РЕГИСТРАЦИОННЫЙ_НОМЕР' as const,
+            typeLabel: regDocLabel,
+            priority: regDocPri,
+          }
+        },
+      ),
+    )
+
+    // Серия свидетельства о регистрации права: «серия 78-Ак № …».
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /(?:^|[^\p{L}\p{N}_])серия\s+(\d{2}[\s\-–]?[A-Za-zА-ЯЁ]{1,4})(?=\s*(?:№|\u2116|N)\.?\s*\d)/giu,
+        (m) => {
+          const val = (m[1] ?? '').trim()
+          if (!isValidDocumentSeries(val)) return null
+          const start = m.index! + m[0].indexOf(val)
+          if (!hasRegistrationRightDocContext(text, start)) return null
+          return {
+            start,
+            end: start + val.length,
+            value: val,
+            categoryId: 'contract_number' as const,
+            placeholderTag: 'СЕРИЯ_ДОКУМЕНТА' as const,
+            typeLabel: regDocLabel,
+            priority: regDocPri - 1,
+          }
+        },
+      ),
+    )
+
+    // Номер свидетельства после серии: «… серия 78-Ак № 252343».
+    raw.push(
+      ...collectRegexMatches(
+        text,
+        /серия\s+\d{2}[\s\-–]?[A-Za-zА-ЯЁ]{1,4}\s*(?:№|\u2116|N)\.?\s*(\d{4,12})(?=$|[^\d])/giu,
+        (m) => {
+          const val = (m[1] ?? '').trim()
+          if (!isValidCertificateDocNumber(val)) return null
+          const start = m.index! + m[0].indexOf(val)
+          if (!hasRegistrationRightDocContext(text, start)) return null
+          return {
+            start,
+            end: start + val.length,
+            value: val,
+            categoryId: 'contract_number' as const,
+            placeholderTag: 'НОМЕР_ДОКУМЕНТА' as const,
+            typeLabel: regDocLabel,
+            priority: regDocPri - 1,
+          }
+        },
+      ),
+    )
+
     const noNum = '(?:№|\\u2116)'
     const noSep = '[ \\t\\u00A0]*'
     const contractToken = '[^\\s,;\\n]{2,64}'
@@ -2727,32 +3166,40 @@ export function findSensitiveEntities(
   }
 
   if (enabled.has('vin')) {
-    const vinPri = 64
-    const vinTag = 'VIN' as const
-    const vinLabel = 'VIN / номер кузова' as const
-    const vinValue = '[A-HJ-NPR-Z0-9]{17}'
+    const vinValue = '([A-HJ-NPR-Z0-9]{17})'
+    const labeledVinValue = '([A-Z0-9][A-Z0-9\\s\\-–]{8,23}[A-Z0-9])'
     const vinRes: RegExp[] = [
       new RegExp(`Идентификационный\\s+номер\\s*\\(VIN\\)\\s*[:\\-–]\\s*${vinValue}`, 'giu'),
-      new RegExp(`\\bVIN\\s*[:\\-–]\\s*${vinValue}`, 'giu'),
+      new RegExp(`Идентификационный\\s+номер\\s*[:\\-–]\\s*${vinValue}`, 'giu'),
+      new RegExp(`\\b(?:VIN|ВИН)\\s*[:\\-–]\\s*${vinValue}`, 'giu'),
       new RegExp(`Номер\\s+кузова\\s*[:\\-–]\\s*${vinValue}`, 'giu'),
+      new RegExp(`Кузов\\s*№\\s*[:\\-–]?\\s*${vinValue}`, 'giu'),
+      new RegExp(`Номер\\s+шасси\\s*[:\\-–]\\s*${vinValue}`, 'giu'),
+      new RegExp(`Шасси\\s*№\\s*[:\\-–]?\\s*${vinValue}`, 'giu'),
+      new RegExp(`Номер\\s+рамы\\s*[:\\-–]\\s*${vinValue}`, 'giu'),
+      new RegExp(`Рама\\s*№\\s*[:\\-–]?\\s*${vinValue}`, 'giu'),
     ]
     for (const re of vinRes) {
       raw.push(
-        ...collectRegexMatches(text, re, (m) => {
-          const r = trimMatchRange(m[0], m.index!)
-          if (!r) return null
-          if (!extractVinPayload(r.value)) return null
-          return {
-            start: r.start,
-            end: r.end,
-            value: r.value,
-            categoryId: 'vin' as const,
-            placeholderTag: vinTag,
-            typeLabel: vinLabel,
-            priority: vinPri,
-          }
-        }),
+        ...collectRegexMatches(text, re, (m) => mapLabeledVinMatch(m, true)),
       )
+    }
+
+    const labeledVinRes: RegExp[] = [
+      new RegExp(
+        `Идентификационный\\s+номер\\s*(?:\\(VIN\\))?\\s*[:\\-–]\\s*${labeledVinValue}`,
+        'giu',
+      ),
+      new RegExp(`\\b(?:VIN|ВИН)\\s*[:\\-–]\\s*${labeledVinValue}`, 'giu'),
+      new RegExp(`Номер\\s+кузова\\s*[:\\-–]\\s*${labeledVinValue}`, 'giu'),
+      new RegExp(`Кузов\\s*№\\s*[:\\-–]?\\s*${labeledVinValue}`, 'giu'),
+      new RegExp(`Номер\\s+шасси\\s*[:\\-–]\\s*${labeledVinValue}`, 'giu'),
+      new RegExp(`Шасси\\s*№\\s*[:\\-–]?\\s*${labeledVinValue}`, 'giu'),
+      new RegExp(`Номер\\s+рамы\\s*[:\\-–]\\s*${labeledVinValue}`, 'giu'),
+      new RegExp(`Рама\\s*№\\s*[:\\-–]?\\s*${labeledVinValue}`, 'giu'),
+    ]
+    for (const re of labeledVinRes) {
+      raw.push(...collectRegexMatches(text, re, (m) => mapLabeledVinMatch(m, false)))
     }
   }
 
@@ -3210,7 +3657,7 @@ export function findSensitiveEntities(
   }
 
   const merged = mergeOverlapping(raw)
-  return assignPlaceholders(merged)
+  return assignPlaceholders(merged, text)
 }
 
 export type ReplaceableEntity = FoundEntity & { replace: boolean }

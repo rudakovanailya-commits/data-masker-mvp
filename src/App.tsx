@@ -17,6 +17,17 @@ import {
   readTextFromFile,
   validateDocumentFile,
 } from './documentFileUpload'
+import {
+  EMPTY_OCR_PDF_ERROR,
+  formatOcrPdfProgress,
+  ocrPdfFile,
+} from './ocrPdf'
+
+const PDF_EMPTY_HINT =
+  'Не удалось извлечь текст из PDF. Возможно, это скан или изображение.'
+
+const OCR_QUALITY_WARNING =
+  'Текст распознан через OCR. Возможны ошибки в словах, цифрах, порядке строк и шапках документа. Проверьте результат вручную перед использованием.'
 
 type Row = FoundEntity & { replace: boolean }
 
@@ -92,6 +103,11 @@ export default function App() {
   const [copyHint, setCopyHint] = useState<string | null>(null)
   const [usageGuideOpen, setUsageGuideOpen] = useState(false)
   const [sourceFileHint, setSourceFileHint] = useState<string | null>(null)
+  const [ocrPendingFile, setOcrPendingFile] = useState<File | null>(null)
+  const [ocrRunning, setOcrRunning] = useState(false)
+  const [ocrProgress, setOcrProgress] = useState<string | null>(null)
+  const [ocrInfoHint, setOcrInfoHint] = useState<string | null>(null)
+  const [ocrQualityWarning, setOcrQualityWarning] = useState(false)
   const [residualRisks, setResidualRisks] = useState<ResidualRisk[] | null>(null)
   const documentFileInputRef = useRef<HTMLInputElement>(null)
   const resultTextareaRef = useRef<HTMLTextAreaElement>(null)
@@ -105,7 +121,18 @@ export default function App() {
     Boolean(resultText) ||
     residualRisks !== null ||
     Boolean(sourceFileHint) ||
-    Boolean(copyHint)
+    Boolean(copyHint) ||
+    Boolean(ocrInfoHint) ||
+    ocrQualityWarning ||
+    ocrPendingFile !== null
+
+  const clearOcrState = useCallback(() => {
+    setOcrPendingFile(null)
+    setOcrRunning(false)
+    setOcrProgress(null)
+    setOcrInfoHint(null)
+    setOcrQualityWarning(false)
+  }, [])
 
   const toggleCategory = useCallback((id: CategoryId) => {
     setEnabledCategories((prev) => {
@@ -183,7 +210,8 @@ export default function App() {
     setResidualRisks(null)
     setCopyHint(null)
     setSourceFileHint(null)
-  }, [])
+    clearOcrState()
+  }, [clearOcrState])
 
   const handleDocumentFilePick = useCallback(() => {
     documentFileInputRef.current?.click()
@@ -198,9 +226,11 @@ export default function App() {
       const validationError = validateDocumentFile(file)
       if (validationError) {
         setSourceFileHint(validationError)
+        clearOcrState()
         return
       }
 
+      clearOcrState()
       try {
         const text = await readTextFromFile(file)
         setSourceText(text)
@@ -214,16 +244,52 @@ export default function App() {
             'Не удалось извлечь текст из .docx. Возможно, документ содержит только скан или изображение.',
           )
         } else if (err instanceof Error && err.message === EMPTY_PDF_ERROR) {
-          setSourceFileHint(
-            'Не удалось извлечь текст из PDF. Возможно, это скан или изображение.',
-          )
+          setSourceFileHint(PDF_EMPTY_HINT)
+          setOcrPendingFile(file)
         } else {
           setSourceFileHint('Не удалось прочитать файл.')
         }
       }
     },
-    [],
+    [clearOcrState],
   )
+
+  const handleOcrPdfScan = useCallback(async () => {
+    if (!ocrPendingFile || ocrRunning) return
+
+    setOcrRunning(true)
+    setOcrProgress('Подготовка OCR…')
+    setOcrInfoHint(null)
+    setOcrQualityWarning(false)
+
+    try {
+      const result = await ocrPdfFile(ocrPendingFile, (progress) => {
+        setOcrProgress(formatOcrPdfProgress(progress))
+      })
+      setSourceText(result.text)
+      setRows([])
+      setResultText('')
+      setCopyHint(null)
+      setSourceFileHint(null)
+      setOcrPendingFile(null)
+      setOcrProgress(null)
+      setOcrQualityWarning(true)
+      if (result.truncated) {
+        setOcrInfoHint('Для теста распознаны только первые 3 страницы.')
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === EMPTY_OCR_PDF_ERROR) {
+        setSourceFileHint(
+          'OCR не смог распознать текст. Попробуйте другой файл или вставьте текст вручную.',
+        )
+      } else {
+        setSourceFileHint('Не удалось прочитать файл.')
+      }
+      setOcrProgress(null)
+    } finally {
+      setOcrRunning(false)
+    }
+  }, [ocrPendingFile, ocrRunning])
 
   const handleClearAll = useCallback(() => {
     setSourceText('')
@@ -232,11 +298,12 @@ export default function App() {
     setResidualRisks(null)
     setCopyHint(null)
     setSourceFileHint(null)
+    clearOcrState()
     if (documentFileInputRef.current) documentFileInputRef.current.value = ''
     requestAnimationFrame(() => {
       inputSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
-  }, [])
+  }, [clearOcrState])
 
   const handleCheckResiduals = useCallback(() => {
     setResidualRisks(findResidualRisks(resultText))
@@ -353,6 +420,32 @@ export default function App() {
             {sourceFileHint}
           </p>
         ) : null}
+        {ocrPendingFile ? (
+          <div className="source-upload__ocr">
+            <button
+              type="button"
+              className="btn btn--outline source-upload__ocr-btn"
+              onClick={handleOcrPdfScan}
+              disabled={ocrRunning}
+            >
+              Распознать PDF-скан
+            </button>
+            <p className="source-upload__ocr-note">
+              OCR работает локально в браузере, может занять время и ошибаться.
+              Проверьте результат вручную.
+            </p>
+            {ocrProgress ? (
+              <p className="source-upload__ocr-progress" aria-live="polite">
+                {ocrProgress}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        {ocrInfoHint ? (
+          <p className="source-upload__info" role="status">
+            {ocrInfoHint}
+          </p>
+        ) : null}
         <textarea
           id="source"
           className="textarea textarea--tall"
@@ -360,10 +453,19 @@ export default function App() {
           onChange={(e) => {
             setSourceText(e.target.value)
             if (sourceFileHint) setSourceFileHint(null)
+            if (ocrPendingFile) setOcrPendingFile(null)
+            if (ocrProgress) setOcrProgress(null)
+            if (ocrInfoHint) setOcrInfoHint(null)
+            if (ocrQualityWarning) setOcrQualityWarning(false)
           }}
           placeholder="Вставьте текст договора, счёта, письма или выписки…"
           spellCheck={false}
         />
+        {ocrQualityWarning ? (
+          <p className="source-upload__ocr-warning" role="status">
+            {OCR_QUALITY_WARNING}
+          </p>
+        ) : null}
       </section>
 
       <section className="panel">

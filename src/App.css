@@ -400,6 +400,54 @@
   color: var(--danger);
 }
 
+.source-upload__ocr {
+  margin: 0 0 0.65rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.source-upload__ocr-btn {
+  flex-shrink: 0;
+}
+
+.source-upload__ocr-note,
+.source-upload__ocr-progress,
+.source-upload__info {
+  margin: 0;
+  max-width: 28rem;
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.source-upload__ocr-note {
+  color: var(--text);
+}
+
+.source-upload__ocr-progress {
+  color: var(--text-h);
+  font-weight: 500;
+}
+
+.source-upload__info {
+  margin: 0 0 0.65rem;
+  color: var(--text);
+}
+
+.source-upload__ocr-warning {
+  margin: 0.65rem 0 0;
+  padding: 0.55rem 0.75rem;
+  max-width: 28rem;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-left: 3px solid color-mix(in srgb, var(--text) 35%, var(--border));
+  border-radius: 8px;
+  background: var(--input-bg);
+}
+
 .muted {
   font-size: 0.875rem;
   color: var(--text);
