@@ -6,7 +6,7 @@ export const EMPTY_PDF_ERROR = 'EMPTY_PDF'
 
 let pdfWorkerConfigured = false
 
-function ensurePdfWorker(): void {
+export function ensurePdfWorker(): void {
   if (pdfWorkerConfigured) return
   GlobalWorkerOptions.workerSrc = new URL(
     'pdfjs-dist/build/pdf.worker.min.mjs',
